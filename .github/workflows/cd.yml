@@ -1,0 +1,64 @@
+name: cd
+
+on:
+  release:
+    types:
+      - published
+
+concurrency:
+  group: cd/${{ github.event.release.tag_name }}
+  cancel-in-progress: true
+
+jobs:
+  retag:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: fischerscode/tagger@v0
+        with:
+          prefix: v
+      - run: |
+          git tag -f latest
+          git push origin latest --force
+
+  publish:
+    permissions:
+      pages: write
+      id-token: write
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: gather prefix-less version string
+        run: |
+          V=${{ github.event.release.tag_name }}
+          V=${V:1}
+          echo "V=$V" >> $GITHUB_ENV
+
+      - run: |
+          sed -i -E "s/\"pkgm 0\\.0\\.0\\+dev\"/\"pkgm $V\"/g" pkgm.ts
+          mv pkgm.ts pkgm
+          tar czf pkgm-$V.tgz pkgm
+
+      - uses: pkgxdev/setup@v2
+      - name: verify `pkgm --version`
+        run: test "$(./pkgm --version)" = "pkgm $V"
+
+      - run:
+          gh release upload --clobber ${{ github.event.release.tag_name }} pkgm-$V.tgz
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - run: |
+          mkdir out
+          mv pkgm out/pkgm.ts
+          echo $V > out/version.txt
+
+      - uses: actions/configure-pages@v4
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: out/
+      - uses: actions/deploy-pages@v4
