@@ -82,7 +82,7 @@ async function install(args: string[]) {
   })
     .spawn();
 
-  let status = await proc.status;
+  const status = await proc.status;
 
   if (!status.success) {
     Deno.exit(status.code);
@@ -120,10 +120,11 @@ async function install(args: string[]) {
       self,
       "sudo-install",
       pkgx_dir,
-      ...to_install
+      ...to_install,
     ];
     const cmd = "/usr/bin/sudo";
-    const status = await new Deno.Command(cmd, {args, env, clearEnv: true}).spawn().status;
+    const status = await new Deno.Command(cmd, { args, env, clearEnv: true })
+      .spawn().status;
     Deno.exit(status.code);
   } else {
     await sudo_install(pkgx_dir, to_install);
