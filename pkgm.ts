@@ -107,9 +107,10 @@ async function install(args: string[]) {
 
   const self = fromFileUrl(import.meta.url);
   const pkgx_dir = Deno.env.get("PKGX_DIR") || `${Deno.env.get("HOME")}/.pkgx`;
+  const needs_sudo = Deno.uid() != 0;
 
-  status = await new Deno.Command("/usr/bin/sudo", {
-    args: [
+  if (needs_sudo) {
+    args = [
       "pkgx",
       "deno^2.1",
       "run",
@@ -119,14 +120,14 @@ async function install(args: string[]) {
       self,
       "sudo-install",
       pkgx_dir,
-      ...to_install,
-    ],
-    env,
-    clearEnv: true,
-  })
-    .spawn().status;
-
-  Deno.exit(status.code);
+      ...to_install
+    ];
+    const cmd = "/usr/bin/sudo";
+    const status = await new Deno.Command(cmd, {args, env, clearEnv: true}).spawn().status;
+    Deno.exit(status.code);
+  } else {
+    await sudo_install(pkgx_dir, to_install);
+  }
 }
 
 async function sudo_install(pkgx_dir: string, pkg_prefixes: string[]) {
