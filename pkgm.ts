@@ -1,4 +1,4 @@
-#!/usr/bin/env -S pkgx deno^2.1 run --ext=ts --allow-run=pkgx,/usr/bin/sudo --allow-env=PKGX_DIR,HOME --allow-read=/usr/local/pkgs
+#!/usr/bin/env -S pkgx deno^2.1 run --ext=ts --allow-sys=uid --allow-run=pkgx,/usr/bin/sudo --allow-env=PKGX_DIR,HOME --allow-read=/usr/local/pkgs
 import { dirname, fromFileUrl, join } from "jsr:@std/path";
 import { ensureDir, existsSync } from "jsr:@std/fs";
 import { parse as parse_args } from "jsr:@std/flags";
