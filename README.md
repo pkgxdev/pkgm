@@ -2,10 +2,15 @@
 
 Install `pkgx` packages to `/usr/local`.
 
-> [!WARNING]
+> [!CAUTION]
 >
 > `pkgm` is new software. Please report any issues you encounter and try it out
 > in parallel with your current package manager.
+
+> [!WARNING]
+>
+> `pkgm` is new software. Some features listed here are not yet implemented. You
+> can help! Or we’ll get to it soon.
 
 ## Usage
 
