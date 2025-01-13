@@ -1,8 +1,8 @@
 #!/usr/bin/env -S pkgx deno^2.1 run --ext=ts --allow-sys=uid --allow-run=pkgx,/usr/bin/sudo --allow-env=PKGX_DIR,HOME --allow-read=/usr/local/pkgs
-import { dirname, fromFileUrl, join } from "jsr:@std/path";
-import { ensureDir, existsSync } from "jsr:@std/fs";
-import { parse as parse_args } from "jsr:@std/flags";
-import * as semver from "jsr:@std/semver";
+import { dirname, fromFileUrl, join } from "jsr:@std/path@^1";
+import { ensureDir, exists, existsSync } from "jsr:@std/fs@^1";
+import { parse as parse_args } from "jsr:@std/flags@0.224.0";
+import * as semver from "jsr:@std/semver@^1";
 
 const parsedArgs = parse_args(Deno.args, {
   alias: {
@@ -115,7 +115,7 @@ async function install(args: string[]) {
     "run",
     "--ext=ts",
     "--allow-write", // cannot be qualified ∵ `Deno.link()` requires full access for some reason
-    `--allow-read`, //  same ^^ 😕
+    "--allow-read", //  same ^^ 😕
     self,
     "sudo-install",
     pkgx_dir,
