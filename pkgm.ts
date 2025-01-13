@@ -82,7 +82,7 @@ async function install(args: string[]) {
   })
     .spawn();
 
-  const status = await proc.status;
+  let status = await proc.status;
 
   if (!status.success) {
     Deno.exit(status.code);
@@ -109,26 +109,22 @@ async function install(args: string[]) {
   const pkgx_dir = Deno.env.get("PKGX_DIR") || `${Deno.env.get("HOME")}/.pkgx`;
   const needs_sudo = Deno.uid() != 0;
 
-  if (needs_sudo) {
-    args = [
-      "pkgx",
-      "deno^2.1",
-      "run",
-      "--ext=ts",
-      "--allow-write", // cannot be qualified ∵ `Deno.link()` requires full access for some reason
-      `--allow-read`, //  same ^^ 😕
-      self,
-      "sudo-install",
-      pkgx_dir,
-      ...to_install,
-    ];
-    const cmd = "/usr/bin/sudo";
-    const status = await new Deno.Command(cmd, { args, env, clearEnv: true })
-      .spawn().status;
-    Deno.exit(status.code);
-  } else {
-    await sudo_install(pkgx_dir, to_install);
-  }
+  args = [
+    "pkgx",
+    "deno^2.1",
+    "run",
+    "--ext=ts",
+    "--allow-write", // cannot be qualified ∵ `Deno.link()` requires full access for some reason
+    `--allow-read`, //  same ^^ 😕
+    self,
+    "sudo-install",
+    pkgx_dir,
+    ...to_install,
+  ];
+  const cmd = needs_sudo ? "/usr/bin/sudo" : args.shift()!;
+  status = await new Deno.Command(cmd, { args, env, clearEnv: true })
+    .spawn().status;
+  Deno.exit(status.code);
 }
 
 async function sudo_install(pkgx_dir: string, pkg_prefixes: string[]) {
