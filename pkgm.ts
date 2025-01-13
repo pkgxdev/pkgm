@@ -1,6 +1,6 @@
 #!/usr/bin/env -S pkgx deno^2.1 run --ext=ts --allow-sys=uid --allow-run=pkgx,/usr/bin/sudo --allow-env=PKGX_DIR,HOME --allow-read=/usr/local/pkgs
 import { dirname, fromFileUrl, join } from "jsr:@std/path@^1";
-import { ensureDir, exists, existsSync } from "jsr:@std/fs@^1";
+import { ensureDir, existsSync } from "jsr:@std/fs@^1";
 import { parse as parse_args } from "jsr:@std/flags@0.224.0";
 import * as semver from "jsr:@std/semver@^1";
 
@@ -46,8 +46,12 @@ if (parsedArgs.help) {
       Deno.exit(1);
       break;
     case "sudo-install": {
-      const [pkgx_dir, ...paths] = args;
-      await sudo_install(pkgx_dir, paths);
+      const [pkgx_dir, runtime_env, ...paths] = args;
+      const parsed_runtime_env = JSON.parse(runtime_env) as Record<
+        string,
+        Record<string, string>
+      >;
+      await sudo_install(pkgx_dir, paths, parsed_runtime_env);
       break;
     }
     default:
@@ -109,6 +113,8 @@ async function install(args: string[]) {
   const pkgx_dir = Deno.env.get("PKGX_DIR") || `${Deno.env.get("HOME")}/.pkgx`;
   const needs_sudo = Deno.uid() != 0;
 
+  const runtime_env = expand_runtime_env(json.runtime_env);
+
   args = [
     "pkgx",
     "deno^2.1",
@@ -119,6 +125,7 @@ async function install(args: string[]) {
     self,
     "sudo-install",
     pkgx_dir,
+    runtime_env,
     ...to_install,
   ];
   const cmd = needs_sudo ? "/usr/bin/sudo" : args.shift()!;
@@ -127,7 +134,11 @@ async function install(args: string[]) {
   Deno.exit(status.code);
 }
 
-async function sudo_install(pkgx_dir: string, pkg_prefixes: string[]) {
+async function sudo_install(
+  pkgx_dir: string,
+  pkg_prefixes: string[],
+  runtime_env: Record<string, Record<string, string>>,
+) {
   const dst = "/usr/local";
   for (const pkg_prefix of pkg_prefixes) {
     // create /usr/local/pkgs/${prefix}
@@ -136,6 +147,31 @@ async function sudo_install(pkgx_dir: string, pkg_prefixes: string[]) {
     await symlink(join("/usr/local/pkgs", pkg_prefix), dst);
     // create v1, etc. symlinks
     await create_v_symlinks(join("/usr/local/pkgs", pkg_prefix));
+  }
+
+  for (const [project, env] of Object.entries(runtime_env)) {
+    const pkg_prefix = pkg_prefixes.find((x) => x.startsWith(project))!;
+    for (const bin of ["bin", "sbin"]) {
+      const bin_prefix = join("/usr/local/pkgs", pkg_prefix, bin);
+
+      if (!existsSync(bin_prefix)) continue;
+
+      for await (const entry of Deno.readDir(bin_prefix)) {
+        if (!entry.isFile) continue;
+
+        const to_stub = join("/usr/local", bin, entry.name);
+
+        let sh = `#!/bin/sh\n`;
+        for (const [key, value] of Object.entries(env)) {
+          sh += `export ${key}="${value}"\n`;
+        }
+        sh += `exec "${bin_prefix}/${entry.name}" "$@"\n`;
+
+        await Deno.remove(to_stub); //FIXME inefficient to symlink for no reason
+        await Deno.writeTextFile(to_stub, sh);
+        await Deno.chmod(to_stub, 0o755);
+      }
+    }
   }
 }
 
@@ -185,6 +221,10 @@ async function symlink(src: string, dst: string) {
         await processEntry(entrySourcePath, entryTargetPath);
       }
     } else {
+      // resinstall
+      if (existsSync(targetPath)) {
+        await Deno.remove(targetPath);
+      }
       await Deno.symlink(sourcePath, targetPath);
     }
   }
@@ -222,4 +262,19 @@ async function create_v_symlinks(prefix: string) {
   for (const [key, value] of Object.entries(major_versions)) {
     await Deno.symlink(`v${semver.format(value)}`, join(shelf, `v${key}`));
   }
+}
+
+function expand_runtime_env(
+  runtime_env: Record<string, Record<string, string>>,
+) {
+  const expanded: Record<string, Record<string, string>> = {};
+  for (const [project, env] of Object.entries(runtime_env)) {
+    const expanded_env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(env)) {
+      const new_value = value.replaceAll(/\$?{{.*prefix}}/g, "/usr/local");
+      expanded_env[key] = new_value;
+    }
+    expanded[project] = expanded_env;
+  }
+  return JSON.stringify(expanded);
 }
