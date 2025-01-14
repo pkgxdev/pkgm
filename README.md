@@ -34,13 +34,6 @@ $ pkgm update
 
 $ pkgm pin git
 # ^^ prevents the installed git from being updated
-
-$ pkgm install git@2.43 --pin
-# installs and pins git^2.43
-
-$ pkgm stub git
-# uninstalls git and installs stubs into bin instead
-# see docs below for more info
 ```
 
 > [!NOTE]
@@ -57,13 +50,13 @@ $ pkgm stub git
 ## Installation
 
 ```sh
-sh <(curl https://pkgx.sh)
+brew install pkgxdev/made/pkgm || curl https://pkgx.sh | sh
 ```
 
 ## Uninstallation
 
 ```sh
-sudo rm /usr/local/bin/pkgm /usr/local/bin/pkgx
+brew rm pkgm || sudo rm /usr/local/bin/pkgm
 ```
 
 # Intricacies
@@ -78,12 +71,3 @@ sudo rm /usr/local/bin/pkgm /usr/local/bin/pkgx
 - Install specific versions of any pkg
 - You install by executable name—thus you _don’t have to do a search first_
 - Installed packages are installed as `root`
-
-# `pkgm stub`
-
-For larger packages or packages with large dependency trees, installing packages
-pollutes your system with hundreds of files. To avoid this, you can install a
-stub instead.
-
-Stubs are tiny shell scripts that invoke the tool via `pkgx` instead. Generally
-this works well. Sometimes it does not however hence it just an option.
