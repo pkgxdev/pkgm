@@ -86,7 +86,7 @@ async function install(args: string[]) {
   set("PKGX_DIR");
 
   const proc = new Deno.Command("pkgx", {
-    args: [...args, "--json"],
+    args: [...args, "--json=v1"],
     stdout: "piped",
     env,
     clearEnv: true,
