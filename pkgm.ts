@@ -1,8 +1,18 @@
-#!/usr/bin/env -S pkgx deno^2.1 run --ext=ts --allow-sys=uid --allow-run=pkgx,/usr/bin/sudo --allow-env=PKGX_DIR,HOME --allow-read=/usr/local/pkgs
+#!/usr/bin/env -S pkgx deno^2.1 run --ext=ts --allow-sys=uid --allow-run=pkgx,/usr/bin/sudo --allow-env=PKGX_DIR,HOMEBREW_PREFIX,HOME --allow-read=/usr/local/pkgs
 import { dirname, fromFileUrl, join } from "jsr:@std/path@^1";
 import { ensureDir, existsSync } from "jsr:@std/fs@^1";
 import { parse as parse_args } from "jsr:@std/flags@0.224.0";
 import * as semver from "jsr:@std/semver@^1";
+
+const standardPath = (() => {
+  const basePath = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+  const homebrew = `${Deno.env.get("HOMEBREW_PREFIX") || "/opt/homebrew"}/bin`;
+  if (existsSync(homebrew)) {
+    return `${homebrew}:${basePath}`;
+  } else {
+    return basePath;
+  }
+})();
 
 const parsedArgs = parse_args(Deno.args, {
   alias: {
@@ -18,7 +28,7 @@ if (parsedArgs.help) {
     args: ["gh", "repo", "view", "pkgxdev/pkgm"],
     clearEnv: true,
     env: {
-      "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+      "PATH": standardPath,
       "HOME": Deno.env.get("HOME")!,
     },
   }).spawn().status;
@@ -69,7 +79,7 @@ async function install(args: string[]) {
   args = args.map((x) => `+${x}`);
 
   const env: Record<string, string> = {
-    "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "PATH": standardPath,
   };
   const set = (key: string) => {
     const x = Deno.env.get(key);
