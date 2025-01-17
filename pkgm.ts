@@ -25,15 +25,7 @@ const parsedArgs = parse_args(Deno.args, {
 });
 
 if (parsedArgs.help) {
-  const status = await new Deno.Command("pkgx", {
-    args: ["gh", "repo", "view", "pkgxdev/pkgm"],
-    clearEnv: true,
-    env: {
-      "PATH": standardPath(),
-      "HOME": Deno.env.get("HOME")!,
-    },
-  }).spawn().status;
-  Deno.exit(status.code);
+  console.log("https://github.com/pkgxdev/pkgm");
 } else if (parsedArgs.version) {
   console.log("pkgm 0.0.0+dev");
 } else {
@@ -66,7 +58,11 @@ if (parsedArgs.help) {
       break;
     }
     default:
-      console.error("invalid usage");
+      if (Deno.args.length === 0) {
+        console.error("https://github.com/pkgxdev/pkgm");
+      } else {
+        console.error("invalid usage");
+      }
       Deno.exit(2);
   }
 }
