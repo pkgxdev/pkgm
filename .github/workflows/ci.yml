@@ -21,3 +21,10 @@ jobs:
       - run: deno fmt --check .
       - run: deno lint .
       - run: deno check ./pkgm.ts
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pkgxdev/setup@v3
+      - run: ./pkgm.ts i git
