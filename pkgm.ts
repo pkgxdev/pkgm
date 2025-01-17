@@ -4,15 +4,16 @@ import { ensureDir, existsSync } from "jsr:@std/fs@^1";
 import { parse as parse_args } from "jsr:@std/flags@0.224.0";
 import * as semver from "jsr:@std/semver@^1";
 
-const standardPath = (() => {
+function standardPath() {
   const basePath = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+  // for pkgm installed via homebrew
   const homebrew = `${Deno.env.get("HOMEBREW_PREFIX") || "/opt/homebrew"}/bin`;
-  if (existsSync(homebrew)) {
+  if (Deno.build.os === "darwin") {
     return `${homebrew}:${basePath}`;
   } else {
     return basePath;
   }
-})();
+}
 
 const parsedArgs = parse_args(Deno.args, {
   alias: {
@@ -28,7 +29,7 @@ if (parsedArgs.help) {
     args: ["gh", "repo", "view", "pkgxdev/pkgm"],
     clearEnv: true,
     env: {
-      "PATH": standardPath,
+      "PATH": standardPath(),
       "HOME": Deno.env.get("HOME")!,
     },
   }).spawn().status;
@@ -79,7 +80,7 @@ async function install(args: string[]) {
   args = args.map((x) => `+${x}`);
 
   const env: Record<string, string> = {
-    "PATH": standardPath,
+    "PATH": standardPath(),
   };
   const set = (key: string) => {
     const x = Deno.env.get(key);
