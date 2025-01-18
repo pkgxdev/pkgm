@@ -62,3 +62,11 @@ jobs:
         with:
           path: out/
       - uses: actions/deploy-pages@v4
+
+      - uses: aurelien-baudet/workflow-dispatch@v4
+        with:
+          workflow: bump.yml
+          repo: pkgxdev/homebrew-made
+          ref: main
+          token: ${{secrets.GH_TOKEN}}
+          inputs: '{ "formula": "pkgx" }'
