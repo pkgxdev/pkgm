@@ -148,6 +148,12 @@ async function sudo_install(
 ) {
   const dst = "/usr/local";
   for (const pkg_prefix of pkg_prefixes) {
+    if (pkg_prefix == "pkgx.sh") {
+      // don’t overwrite ourselves
+      // * https://github.com/pkgxdev/pkgm/issues/14
+      // * https://github.com/pkgxdev/pkgm/issues/17
+      continue;
+    }
     // create /usr/local/pkgs/${prefix}
     await mirror_directory("/usr/local/pkgs", pkgx_dir, pkg_prefix);
     // symlink /usr/local/pkgs/${prefix} to /usr/local
@@ -158,6 +164,9 @@ async function sudo_install(
 
   for (const [project, env] of Object.entries(runtime_env)) {
     const pkg_prefix = pkg_prefixes.find((x) => x.startsWith(project))!;
+    if (pkg_prefix == "pkgx.sh") {
+      continue;
+    }
     for (const bin of ["bin", "sbin"]) {
       const bin_prefix = join("/usr/local/pkgs", pkg_prefix, bin);
 
