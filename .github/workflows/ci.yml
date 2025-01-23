@@ -34,7 +34,7 @@ jobs:
       - run: /usr/local/bin/bk --help
 
       - run: |
-          if ["$(/usr/local/bin/pkgx --version)" != "pkgx 2"* ]; then
+          if [ "$(/usr/local/bin/pkgx --version)" != "pkgx 2"* ]; then
             exit 1
           fi
 
