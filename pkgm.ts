@@ -148,25 +148,26 @@ async function sudo_install(
 ) {
   const dst = "/usr/local";
   for (const pkg_prefix of pkg_prefixes) {
-    if (pkg_prefix == "pkgx.sh") {
-      // don’t overwrite ourselves
-      // * https://github.com/pkgxdev/pkgm/issues/14
-      // * https://github.com/pkgxdev/pkgm/issues/17
-      continue;
-    }
     // create /usr/local/pkgs/${prefix}
-    await mirror_directory("/usr/local/pkgs", pkgx_dir, pkg_prefix);
+    await mirror_directory(join(dst, "pkgs"), pkgx_dir, pkg_prefix);
     // symlink /usr/local/pkgs/${prefix} to /usr/local
-    await symlink(join("/usr/local/pkgs", pkg_prefix), dst);
+    if (!pkg_prefix.startsWith("pkgx.sh/v")) {
+      // ^^ don’t overwrite ourselves
+      // ^^ * https://github.com/pkgxdev/pkgm/issues/14
+      // ^^ * https://github.com/pkgxdev/pkgm/issues/17
+      await symlink(join(dst, "pkgs", pkg_prefix), dst);
+    }
     // create v1, etc. symlinks
-    await create_v_symlinks(join("/usr/local/pkgs", pkg_prefix));
+    await create_v_symlinks(join(dst, "pkgs", pkg_prefix));
   }
 
   for (const [project, env] of Object.entries(runtime_env)) {
+    if (project == "pkgx.sh") continue;
+
     const pkg_prefix = pkg_prefixes.find((x) => x.startsWith(project))!;
-    if (pkg_prefix == "pkgx.sh") {
-      continue;
-    }
+
+    if (!pkg_prefix) continue; //FIXME wtf?
+
     for (const bin of ["bin", "sbin"]) {
       const bin_prefix = join("/usr/local/pkgs", pkg_prefix, bin);
 
@@ -221,7 +222,12 @@ async function mirror_directory(dst: string, src: string, prefix: string) {
 }
 
 async function symlink(src: string, dst: string) {
-  await processEntry(src, dst);
+  for (const base of ["bin", "sbin", "share", "lib", "libexec", "var", "etc"]) {
+    const foo = join(src, base);
+    if (existsSync(foo)) {
+      await processEntry(foo, join(dst, base));
+    }
+  }
 
   async function processEntry(sourcePath: string, targetPath: string) {
     const fileInfo = await Deno.lstat(sourcePath);

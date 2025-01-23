@@ -28,8 +28,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: pkgxdev/setup@v3
       - run: ./pkgm.ts i git
-
       - run: /usr/local/bin/git --version
 
       - run: ./pkgm.ts i pkgx.sh/brewkit
       - run: /usr/local/bin/bk --help
+
+      - run: |
+          if [[ "$(/usr/local/bin/pkgx --version)" != "pkgx 2"* ]]; then
+            exit 1
+          fi
+
+      # TODO pending: https://github.com/pkgxdev/pantry/issues/8487
+      # - run: ./pkgm.ts i xpra.org # https://github.com/pkgxdev/pkgm/issues/13
+      # - run: ls -la /usr/local/pkgs/xpra.org/v6.2.3/venv/bin
+      # - run: xpra --version
