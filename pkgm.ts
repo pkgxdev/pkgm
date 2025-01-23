@@ -152,7 +152,6 @@ async function sudo_install(
     await mirror_directory(join(dst, "pkgs"), pkgx_dir, pkg_prefix);
     // symlink /usr/local/pkgs/${prefix} to /usr/local
     if (!pkg_prefix.startsWith("pkgx.sh/v")) {
-      console.log(pkg_prefix);
       // ^^ don’t overwrite ourselves
       // ^^ * https://github.com/pkgxdev/pkgm/issues/14
       // ^^ * https://github.com/pkgxdev/pkgm/issues/17
