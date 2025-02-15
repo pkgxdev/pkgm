@@ -1,21 +1,31 @@
 #!/usr/bin/env -S pkgx --quiet deno^2.1 run --ext=ts --allow-sys=uid --allow-run --allow-env=PKGX_DIR,HOMEBREW_PREFIX,HOME --allow-read=/usr/local/pkgs
 import { dirname, fromFileUrl, join } from "jsr:@std/path@^1";
 import { ensureDir, existsSync } from "jsr:@std/fs@^1";
-import { parse as parse_args } from "jsr:@std/flags@0.224.0";
+import { parseArgs } from "jsr:@std/cli@^1";
 import * as semver from "jsr:@std/semver@^1";
 
 function standardPath() {
-  const basePath = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
-  // for pkgm installed via homebrew
-  const homebrew = `${Deno.env.get("HOMEBREW_PREFIX") || "/opt/homebrew"}/bin`;
-  if (Deno.build.os === "darwin") {
-    return `${homebrew}:${basePath}`;
-  } else {
-    return basePath;
+  let path = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+
+  // for pkgx installed via homebrew
+  let homebrewPrefix = "";
+  switch (Deno.build.os) {
+    case "darwin":
+      homebrewPrefix = "/opt/homebrew";
+      break;
+    case "linux":
+      homebrewPrefix = "/home/linuxbrew/.linuxbrew";
+      break;
   }
+  if (homebrewPrefix) {
+    homebrewPrefix = Deno.env.get("HOMEBREW_PREFIX") ?? homebrewPrefix;
+    path = `${homebrewPrefix}/bin:${path}`;
+  }
+
+  return path;
 }
 
-const parsedArgs = parse_args(Deno.args, {
+const parsedArgs = parseArgs(Deno.args, {
   alias: {
     v: "version",
     h: "help",
@@ -117,7 +127,7 @@ async function install(args: string[]) {
   }
 
   const self = fromFileUrl(import.meta.url);
-  const pkgx_dir = Deno.env.get("PKGX_DIR") || `${Deno.env.get("HOME")}/.pkgx`;
+  const pkgx_dir = Deno.env.get("PKGX_DIR") ?? `${Deno.env.get("HOME")}/.pkgx`;
   const needs_sudo = Deno.uid() != 0;
 
   const runtime_env = expand_runtime_env(json.runtime_env);
@@ -135,7 +145,13 @@ async function install(args: string[]) {
     runtime_env,
     ...to_install,
   ];
-  const cmd = needs_sudo ? "/usr/bin/sudo" : args.shift()!;
+  let cmd = ""
+  if (needs_sudo) {
+    cmd = "/usr/bin/sudo";
+    args.unshift("-E"); // we already cleared the env, it's safe
+  } else {
+    cmd = args.shift()!;
+  }
   status = await new Deno.Command(cmd, { args, env, clearEnv: true })
     .spawn().status;
   Deno.exit(status.code);
