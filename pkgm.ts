@@ -148,7 +148,10 @@ async function install(args: string[]) {
   let cmd = ""
   if (needs_sudo) {
     cmd = "/usr/bin/sudo";
-    args.unshift("-E"); // we already cleared the env, it's safe
+    args.unshift(
+      "-E", // we already cleared the env, it's safe
+      "env", `PATH=${env.PATH}`,
+    );
   } else {
     cmd = args.shift()!;
   }
