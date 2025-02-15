@@ -14,7 +14,7 @@ function standardPath() {
       homebrewPrefix = "/opt/homebrew";
       break;
     case "linux":
-      homebrewPrefix = "/home/linuxbrew/.linuxbrew";
+      homebrewPrefix = `/home/linuxbrew/.linuxbrew:${Deno.env.get("HOME")}/.linuxbrew`;
       break;
   }
   if (homebrewPrefix) {
