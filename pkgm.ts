@@ -11,7 +11,7 @@ function standardPath() {
   let homebrewPrefix = "";
   switch (Deno.build.os) {
     case "darwin":
-      homebrewPrefix = "/opt/homebrew";
+      homebrewPrefix = "/opt/homebrew"; // /usr/local is already in the path
       break;
     case "linux":
       homebrewPrefix = `/home/linuxbrew/.linuxbrew:${Deno.env.get("HOME")}/.linuxbrew`;
