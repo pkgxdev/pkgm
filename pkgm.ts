@@ -1,8 +1,7 @@
 #!/usr/bin/env -S pkgx --quiet deno^2.1 run --ext=ts --allow-sys=uid --allow-run --allow-env=PKGX_DIR,HOMEBREW_PREFIX,HOME --allow-read=/usr/local/pkgs
-import { dirname, fromFileUrl, join } from "jsr:@std/path@^1";
+import { fromFileUrl, join } from "jsr:@std/path@^1";
 import { ensureDir, existsSync } from "jsr:@std/fs@^1";
 import { parse as parse_args } from "jsr:@std/flags@0.224.0";
-import * as semver from "jsr:@std/semver@^1";
 
 function standardPath() {
   const basePath = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
@@ -64,6 +63,20 @@ if (parsedArgs.help) {
         console.error("invalid usage");
       }
       Deno.exit(2);
+  }
+}
+
+// Helper function to check directory exists 
+// Deno.land recommended implementation to avoid race conditions.
+async function dir_exists(path: string): Promise<boolean> {
+  try {
+    const fileInfo = await Deno.lstat(path);
+    return fileInfo.isDirectory;
+  } catch (err) {
+    if (!(err instanceof Deno.errors.NotFound)) {
+      throw err;
+    }
+    return false;
   }
 }
 
@@ -158,7 +171,7 @@ async function sudo_install(
       await symlink(join(dst, "pkgs", pkg_prefix), dst);
     }
     // create v1, etc. symlinks
-    await create_v_symlinks(join(dst, "pkgs", pkg_prefix));
+    await create_v_symlinks(join(pkgx_dir), join(dst, "pkgs"), pkg_prefix);;
   }
 
   for (const [project, env] of Object.entries(runtime_env)) {
@@ -252,37 +265,42 @@ async function symlink(src: string, dst: string) {
   }
 }
 
-//FIXME we only do major as that's typically all pkgs need, but like we should do better
-async function create_v_symlinks(prefix: string) {
-  const shelf = dirname(prefix);
+// Create all the version symbolic links based on those created by pkgx
+// rather than reimplement using semver which cannot parse some package del /usr/local/pkgs/* && deno run --allow-env --allow-sys --allow-read --allow-run pkgm.ts install openssl@1.1.1ws
+// https://github.com/pkgxdev/pkgm/issues/24
+async function create_v_symlinks(src: string, dst: string, prefix: string) {
+  // split prefix full version named dir from the rest
+  const prefix_dir = prefix.split("/").slice(0, -1).join("/");
+  const prefix_ver = prefix.split("/").reverse()[0];
 
-  const versions = [];
-  for await (const entry of Deno.readDir(shelf)) {
+  // pachage dirs in pkgx and pkgm (src to dst)
+  const pkgx_dir = join(src, prefix_dir);
+  const pkgm_dir = join(dst, prefix_dir);
+
+  // the full path of newly installed pkg i.e including version part of path
+  const main_ver_path = join(pkgm_dir, prefix_ver);
+  // a relitive path version of above used for clean symbolic links
+  const main_ver_rel = join(".", prefix_ver);
+
+  // check the pkgx path is valid
+  if (!dir_exists(pkgx_dir)) {
+    console.log("Error: Could not find " + pkgx_dir);
+  }
+
+  // check that we have the package in pkgm
+  if (!dir_exists(main_ver_path)) {
+    console.log("Error: Could not find " + main_ver_path);
+  }
+
+  // look at all the symboloc links in pkgx and recreate them in pkgm
+  // but using the main pkg dir under pkgm
+  for await (const entry of Deno.readDir(pkgx_dir)) {
     if (
-      entry.isDirectory && !entry.isSymlink && entry.name.startsWith("v") &&
+      entry.isSymlink && entry.name.startsWith("v") &&
       entry.name != "var"
     ) {
-      try {
-        versions.push(semver.parse(entry.name));
-      } catch {
-        //ignore
-      }
+      await Deno.symlink(main_ver_rel, join(pkgm_dir, entry.name));
     }
-  }
-
-  // collect an Record of versions per major version
-  const major_versions: Record<number, semver.SemVer> = {};
-  for (const version of versions) {
-    if (
-      major_versions[version.major] === undefined ||
-      semver.greaterThan(version, major_versions[version.major])
-    ) {
-      major_versions[version.major] = version;
-    }
-  }
-
-  for (const [key, value] of Object.entries(major_versions)) {
-    await Deno.symlink(`v${semver.format(value)}`, join(shelf, `v${key}`));
   }
 }
 
