@@ -1,4 +1,4 @@
-#!/usr/bin/env -S pkgx --quiet deno^2.1 run --ext=ts --allow-sys=uid --allow-run --allow-env=PKGX_DIR,HOMEBREW_PREFIX,HOME --allow-read=/usr/local/pkgs,${HOME}/.local/pkgs
+#!/usr/bin/env -S pkgx --quiet deno^2.1 run --ext=ts --allow-sys=uid --allow-run --allow-env=PKGX_DIR,HOMEBREW_PREFIX,HOME,PATH --allow-read
 import { SemVer, semver } from "https://deno.land/x/libpkgx@v0.20.3/mod.ts";
 import { dirname, fromFileUrl, join } from "jsr:@std/path@^1";
 import { ensureDir, existsSync } from "jsr:@std/fs@^1";
@@ -100,6 +100,7 @@ async function install(args: string[], basePath: string) {
   const env: Record<string, string> = {
     "PATH": standardPath(),
   };
+  const pkgx = get_pkgx();
   const set = (key: string) => {
     const x = Deno.env.get(key);
     if (x) env[key] = x;
@@ -107,7 +108,7 @@ async function install(args: string[], basePath: string) {
   set("HOME");
   set("PKGX_DIR");
 
-  const proc = new Deno.Command("pkgx", {
+  const proc = new Deno.Command(pkgx, {
     args: [...args, "--json=v1"],
     stdout: "piped",
     env,
@@ -133,7 +134,7 @@ async function install(args: string[], basePath: string) {
   const runtime_env = expand_runtime_env(json, basePath);
 
   args = [
-    "pkgx",
+    pkgx,
     "deno^2.1",
     "run",
     "--ext=ts",
@@ -257,7 +258,7 @@ async function symlink(src: string, dst: string) {
       "libexec",
       "var",
       "etc",
-      "ssl",
+      "ssl", // FIXME for ca-certs
     ]
   ) {
     const foo = join(src, base);
@@ -367,4 +368,14 @@ function symlink_with_overwrite(src: string, dst: string) {
     Deno.removeSync(dst);
   }
   Deno.symlinkSync(src, dst);
+}
+
+function get_pkgx() {
+  for (const path of Deno.env.get("PATH")!.split(":")) {
+    const pkgx = join(path, "pkgx");
+    if (existsSync(pkgx)) {
+      return pkgx;
+    }
+  }
+  throw new Error("no `pkgx` found in `$PATH`");
 }
