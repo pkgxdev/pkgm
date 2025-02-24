@@ -22,29 +22,37 @@ jobs:
       - run: deno lint .
       - run: deno check ./pkgm.ts
 
+  #TODO test on linux! we are currently broken due to rpath issues
+  # https://github.com/pkgxdev/pkgm/pull/30#issuecomment-2678957666
   test:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: pkgxdev/setup@v3
+
+      - run: |
+          if [[ "$(/usr/local/bin/pkgx --version)" != "pkgx 2"* ]]; then
+            exit 1
+          fi
+
       - run: ./pkgm.ts i git
       - run: /usr/local/bin/git --version
 
       - run: ./pkgm.ts i pkgx.sh/brewkit
       - run: /usr/local/bin/bk --help
 
+      # check repeats work
       - run: rm /usr/local/bin/bk
       - run: test ! -f /usr/local/bin/bk
       - run: ./pkgm.ts i pkgx.sh/brewkit
       - run: /usr/local/bin/bk --help
 
-      - run: ./pkgm.ts li pkgx.sh/brewkit
-      - run: ~/.local/bin/bk --help
+      - run: ./pkgm.ts li gum
+      - run: ~/.local/bin/gum --version
 
-      - run: |
-          if [[ "$(/usr/local/bin/pkgx --version)" != "pkgx 2"* ]]; then
-            exit 1
-          fi
+      # https://github.com/pkgxdev/pkgm/issues/24
+      - run: ./pkgm.ts i curl
+      - run: /usr/local/bin/curl -L pkgx.sh
 
       # TODO pending: https://github.com/pkgxdev/pantry/issues/8487
       # - run: ./pkgm.ts i xpra.org # https://github.com/pkgxdev/pkgm/issues/13
