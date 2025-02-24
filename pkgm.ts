@@ -37,7 +37,13 @@ const parsedArgs = parseArgs(Deno.args, {
 });
 
 if (parsedArgs.help) {
-  console.log("https://github.com/pkgxdev/pkgm");
+  const { code } = await new Deno.Command("pkgx", {
+    args: [
+      "glow",
+      "https://raw.githubusercontent.com/pkgxdev/pkgm/refs/heads/main/README.md",
+    ],
+  }).spawn().status;
+  Deno.exit(code);
 } else if (parsedArgs.version) {
   console.log("pkgm 0.0.0+dev");
 } else {
