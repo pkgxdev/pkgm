@@ -1,21 +1,33 @@
-#!/usr/bin/env -S pkgx --quiet deno^2.1 run --ext=ts --allow-sys=uid --allow-run --allow-env=PKGX_DIR,HOMEBREW_PREFIX,HOME --allow-read=/usr/local/pkgs
+#!/usr/bin/env -S pkgx --quiet deno^2.1 run --ext=ts --allow-sys=uid --allow-run --allow-env=PKGX_DIR,HOMEBREW_PREFIX,HOME --allow-read=/usr/local/pkgs,${HOME}/.local/pkgs
 import { dirname, fromFileUrl, join } from "jsr:@std/path@^1";
 import { ensureDir, existsSync } from "jsr:@std/fs@^1";
-import { parse as parse_args } from "jsr:@std/flags@0.224.0";
+import { parseArgs } from "jsr:@std/cli@^1";
 import * as semver from "jsr:@std/semver@^1";
 
 function standardPath() {
-  const basePath = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
-  // for pkgm installed via homebrew
-  const homebrew = `${Deno.env.get("HOMEBREW_PREFIX") || "/opt/homebrew"}/bin`;
-  if (Deno.build.os === "darwin") {
-    return `${homebrew}:${basePath}`;
-  } else {
-    return basePath;
+  let path = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+
+  // for pkgx installed via homebrew
+  let homebrewPrefix = "";
+  switch (Deno.build.os) {
+    case "darwin":
+      homebrewPrefix = "/opt/homebrew"; // /usr/local is already in the path
+      break;
+    case "linux":
+      homebrewPrefix = `/home/linuxbrew/.linuxbrew:${
+        Deno.env.get("HOME")
+      }/.linuxbrew`;
+      break;
   }
+  if (homebrewPrefix) {
+    homebrewPrefix = Deno.env.get("HOMEBREW_PREFIX") ?? homebrewPrefix;
+    path = `${homebrewPrefix}/bin:${path}`;
+  }
+
+  return path;
 }
 
-const parsedArgs = parse_args(Deno.args, {
+const parsedArgs = parseArgs(Deno.args, {
   alias: {
     v: "version",
     h: "help",
@@ -34,7 +46,11 @@ if (parsedArgs.help) {
   switch (parsedArgs._[0]) {
     case "install":
     case "i":
-      await install(args);
+      await install(args, "/usr/local");
+      break;
+    case "local-install":
+    case "li":
+      await install(args, `${Deno.env.get("HOME")!}/.local`);
       break;
     case "uninstall":
     case "rm":
@@ -49,12 +65,12 @@ if (parsedArgs.help) {
       Deno.exit(1);
       break;
     case "sudo-install": {
-      const [pkgx_dir, runtime_env, ...paths] = args;
+      const [pkgx_dir, runtime_env, basePath, ...paths] = args;
       const parsed_runtime_env = JSON.parse(runtime_env) as Record<
         string,
         Record<string, string>
       >;
-      await sudo_install(pkgx_dir, paths, parsed_runtime_env);
+      await sudo_install(pkgx_dir, paths, parsed_runtime_env, basePath);
       break;
     }
     default:
@@ -67,7 +83,7 @@ if (parsedArgs.help) {
   }
 }
 
-async function install(args: string[]) {
+async function install(args: string[], basePath: string) {
   if (args.length === 0) {
     console.error("no packages specified");
     Deno.exit(1);
@@ -106,9 +122,9 @@ async function install(args: string[]) {
 
   const self = fromFileUrl(import.meta.url);
   const pkgx_dir = Deno.env.get("PKGX_DIR") || `${Deno.env.get("HOME")}/.pkgx`;
-  const needs_sudo = Deno.uid() != 0;
+  const needs_sudo = Deno.uid() != 0 && basePath === "/usr/local";
 
-  const runtime_env = expand_runtime_env(json.runtime_env);
+  const runtime_env = expand_runtime_env(json.runtime_env, basePath);
 
   args = [
     "pkgx",
@@ -121,9 +137,20 @@ async function install(args: string[]) {
     "sudo-install",
     pkgx_dir,
     runtime_env,
+    basePath,
     ...pkg_prefixes,
   ];
-  const cmd = needs_sudo ? "/usr/bin/sudo" : args.shift()!;
+  let cmd = "";
+  if (needs_sudo) {
+    cmd = "/usr/bin/sudo";
+    args.unshift(
+      "-E", // we already cleared the env, it's safe
+      "env",
+      `PATH=${env.PATH}`,
+    );
+  } else {
+    cmd = args.shift()!;
+  }
   status = await new Deno.Command(cmd, { args, env, clearEnv: true })
     .spawn().status;
   Deno.exit(status.code);
@@ -133,12 +160,13 @@ async function sudo_install(
   pkgx_dir: string,
   pkg_prefixes: string[],
   runtime_env: Record<string, Record<string, string>>,
+  basePath: string,
 ) {
-  const dst = "/usr/local";
+  const dst = basePath;
   for (const pkg_prefix of pkg_prefixes) {
-    // create /usr/local/pkgs/${prefix}
+    // create ${dst}/pkgs/${prefix}
     await mirror_directory(join(dst, "pkgs"), pkgx_dir, pkg_prefix);
-    // symlink /usr/local/pkgs/${prefix} to /usr/local
+    // symlink ${dst}/pkgs/${prefix} to ${dst}
     if (!pkg_prefix.startsWith("pkgx.sh/v")) {
       // ^^ don’t overwrite ourselves
       // ^^ * https://github.com/pkgxdev/pkgm/issues/14
@@ -157,14 +185,14 @@ async function sudo_install(
     if (!pkg_prefix) continue; //FIXME wtf?
 
     for (const bin of ["bin", "sbin"]) {
-      const bin_prefix = join("/usr/local/pkgs", pkg_prefix, bin);
+      const bin_prefix = join(`${dst}/pkgs`, pkg_prefix, bin);
 
       if (!existsSync(bin_prefix)) continue;
 
       for await (const entry of Deno.readDir(bin_prefix)) {
         if (!entry.isFile) continue;
 
-        const to_stub = join("/usr/local", bin, entry.name);
+        const to_stub = join(dst, bin, entry.name);
 
         let sh = `#!/bin/sh\n`;
         for (const [key, value] of Object.entries(env)) {
@@ -280,12 +308,13 @@ async function create_v_symlinks(prefix: string) {
 
 function expand_runtime_env(
   runtime_env: Record<string, Record<string, string>>,
+  basePath: string,
 ) {
   const expanded: Record<string, Record<string, string>> = {};
   for (const [project, env] of Object.entries(runtime_env)) {
     const expanded_env: Record<string, string> = {};
     for (const [key, value] of Object.entries(env)) {
-      const new_value = value.replaceAll(/\$?{{.*prefix}}/g, "/usr/local");
+      const new_value = value.replaceAll(/\$?{{.*prefix}}/g, basePath);
       expanded_env[key] = new_value;
     }
     expanded[project] = expanded_env;
