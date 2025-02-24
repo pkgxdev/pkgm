@@ -284,7 +284,6 @@ async function create_v_symlinks(prefix: string) {
 
   const versions = [];
   for await (const { name, isDirectory, isSymlink } of Deno.readDir(shelf)) {
-    console.log(name, isDirectory, isSymlink);
     if (isSymlink) continue;
     if (!isDirectory) continue;
     if (!name.startsWith("v")) continue;
