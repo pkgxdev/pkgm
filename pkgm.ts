@@ -1,8 +1,8 @@
 #!/usr/bin/env -S pkgx --quiet deno^2.1 run --ext=ts --allow-sys=uid --allow-run --allow-env=PKGX_DIR,HOMEBREW_PREFIX,HOME --allow-read=/usr/local/pkgs,${HOME}/.local/pkgs
+import { SemVer, semver } from "https://deno.land/x/libpkgx@v0.20.3/mod.ts";
 import { dirname, fromFileUrl, join } from "jsr:@std/path@^1";
 import { ensureDir, existsSync } from "jsr:@std/fs@^1";
 import { parseArgs } from "jsr:@std/cli@^1";
-import * as semver from "jsr:@std/semver@^1";
 
 function standardPath() {
   let path = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
@@ -283,32 +283,31 @@ async function create_v_symlinks(prefix: string) {
   const shelf = dirname(prefix);
 
   const versions = [];
-  for await (const entry of Deno.readDir(shelf)) {
-    if (
-      entry.isDirectory && !entry.isSymlink && entry.name.startsWith("v") &&
-      entry.name != "var"
-    ) {
-      try {
-        versions.push(semver.parse(entry.name));
-      } catch {
-        //ignore
-      }
+  for await (const { name, isDirectory, isSymlink } of Deno.readDir(shelf)) {
+    console.log(name, isDirectory, isSymlink);
+    if (isSymlink) continue;
+    if (!isDirectory) continue;
+    if (!name.startsWith("v")) continue;
+    if (name == "var") continue;
+    const version = semver.parse(name);
+    if (version) {
+      versions.push(version);
     }
   }
 
   // collect an Record of versions per major version
-  const major_versions: Record<number, semver.SemVer> = {};
+  const major_versions: Record<number, SemVer> = {};
   for (const version of versions) {
     if (
       major_versions[version.major] === undefined ||
-      semver.greaterThan(version, major_versions[version.major])
+      version.gt(major_versions[version.major])
     ) {
       major_versions[version.major] = version;
     }
   }
 
-  for (const [key, value] of Object.entries(major_versions)) {
-    symlink_with_overwrite(`v${semver.format(value)}`, join(shelf, `v${key}`));
+  for (const [key, semver] of Object.entries(major_versions)) {
+    symlink_with_overwrite(`v${semver}`, join(shelf, `v${key}`));
   }
 }
 
