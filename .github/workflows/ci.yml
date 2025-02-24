@@ -33,6 +33,11 @@ jobs:
       - run: ./pkgm.ts i pkgx.sh/brewkit
       - run: /usr/local/bin/bk --help
 
+      - run: rm /usr/local/bin/bk
+      - run: test ! -f /usr/local/bin/bk
+      - run: ./pkgm.ts i pkgx.sh/brewkit
+      - run: /usr/local/bin/bk --help
+
       - run: ./pkgm.ts li pkgx.sh/brewkit
       - run: ~/.local/bin/bk --help
 

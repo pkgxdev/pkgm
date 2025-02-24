@@ -120,18 +120,6 @@ async function install(args: string[], basePath: string) {
   // deno-lint-ignore no-explicit-any
   const pkg_prefixes = json.pkgs.map((x: any) => `${x.project}/v${x.version}`);
 
-  const to_install = [];
-  for (const prefix of pkg_prefixes) {
-    if (!existsSync(join(`${basePath}/pkgs`, prefix))) {
-      to_install.push(prefix);
-    }
-  }
-
-  if (to_install.length === 0) {
-    console.error("pkgs already installed");
-    Deno.exit(0);
-  }
-
   const self = fromFileUrl(import.meta.url);
   const pkgx_dir = Deno.env.get("PKGX_DIR") || `${Deno.env.get("HOME")}/.pkgx`;
   const needs_sudo = Deno.uid() != 0 && basePath === "/usr/local";
@@ -150,7 +138,7 @@ async function install(args: string[], basePath: string) {
     pkgx_dir,
     runtime_env,
     basePath,
-    ...to_install,
+    ...pkg_prefixes,
   ];
   let cmd = "";
   if (needs_sudo) {
@@ -237,12 +225,16 @@ async function mirror_directory(dst: string, src: string, prefix: string) {
         await processEntry(entrySourcePath, entryTargetPath);
       }
     } else if (fileInfo.isFile) {
+      // Remove the target file if it exists
+      if (existsSync(targetPath)) {
+        await Deno.remove(targetPath);
+      }
       // Create a hard link for files
       await Deno.link(sourcePath, targetPath);
     } else if (fileInfo.isSymlink) {
       // Recreate symlink in the target directory
       const linkTarget = await Deno.readLink(sourcePath);
-      await Deno.symlink(linkTarget, targetPath);
+      symlink_with_overwrite(linkTarget, targetPath);
     } else {
       throw new Error(`unsupported file type at: ${sourcePath}`);
     }
@@ -275,7 +267,7 @@ async function symlink(src: string, dst: string) {
       if (existsSync(targetPath)) {
         await Deno.remove(targetPath);
       }
-      await Deno.symlink(sourcePath, targetPath);
+      symlink_with_overwrite(sourcePath, targetPath);
     }
   }
 }
@@ -310,7 +302,7 @@ async function create_v_symlinks(prefix: string) {
   }
 
   for (const [key, value] of Object.entries(major_versions)) {
-    await Deno.symlink(`v${semver.format(value)}`, join(shelf, `v${key}`));
+    symlink_with_overwrite(`v${semver.format(value)}`, join(shelf, `v${key}`));
   }
 }
 
@@ -328,4 +320,11 @@ function expand_runtime_env(
     expanded[project] = expanded_env;
   }
   return JSON.stringify(expanded);
+}
+
+function symlink_with_overwrite(src: string, dst: string) {
+  if (existsSync(dst)) {
+    Deno.removeSync(dst);
+  }
+  Deno.symlinkSync(src, dst);
 }
