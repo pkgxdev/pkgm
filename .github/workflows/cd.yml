@@ -69,4 +69,4 @@ jobs:
           repo: pkgxdev/homebrew-made
           ref: main
           token: ${{secrets.GH_TOKEN}}
-          inputs: '{ "formula": "pkgx" }'
+          inputs: '{ "formula": "pkgm" }'
