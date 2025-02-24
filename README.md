@@ -23,6 +23,10 @@ $ pkgm install git@2.41
 
 $ pkgm uninstall git
 
+$ pkgm local-install git
+# ^^ installs git to ~/.local. ie. you get ~/.local/bin/git
+# `pkgm li git` is easier to type and remember
+
 $ pkgm list
 # ^^ lists what is installed
 
