@@ -33,6 +33,9 @@ jobs:
       - run: ./pkgm.ts i pkgx.sh/brewkit
       - run: /usr/local/bin/bk --help
 
+      - run: ./pkgm.ts li pkgx.sh/brewkit
+      - run: ~/.local/bin/bk --help
+
       - run: |
           if [[ "$(/usr/local/bin/pkgx --version)" != "pkgx 2"* ]]; then
             exit 1
