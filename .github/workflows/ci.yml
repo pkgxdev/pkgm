@@ -25,7 +25,12 @@ jobs:
   #TODO test on linux! we are currently broken due to rpath issues
   # https://github.com/pkgxdev/pkgm/pull/30#issuecomment-2678957666
   test:
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        os:
+          - macos-latest
+          - ubuntu-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: pkgxdev/setup@v3

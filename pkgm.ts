@@ -130,7 +130,7 @@ async function install(args: string[], basePath: string) {
   const pkgx_dir = Deno.env.get("PKGX_DIR") || `${Deno.env.get("HOME")}/.pkgx`;
   const needs_sudo = Deno.uid() != 0 && basePath === "/usr/local";
 
-  const runtime_env = expand_runtime_env(json.runtime_env, basePath);
+  const runtime_env = expand_runtime_env(json, basePath);
 
   args = [
     "pkgx",
@@ -142,7 +142,7 @@ async function install(args: string[], basePath: string) {
     self,
     "sudo-install",
     pkgx_dir,
-    runtime_env,
+    JSON.stringify(runtime_env),
     basePath,
     ...pkg_prefixes,
   ];
@@ -248,7 +248,18 @@ async function mirror_directory(dst: string, src: string, prefix: string) {
 }
 
 async function symlink(src: string, dst: string) {
-  for (const base of ["bin", "sbin", "share", "lib", "libexec", "var", "etc"]) {
+  for (
+    const base of [
+      "bin",
+      "sbin",
+      "share",
+      "lib",
+      "libexec",
+      "var",
+      "etc",
+      "ssl",
+    ]
+  ) {
     const foo = join(src, base);
     if (existsSync(foo)) {
       await processEntry(foo, join(dst, base));
@@ -311,19 +322,44 @@ async function create_v_symlinks(prefix: string) {
 }
 
 function expand_runtime_env(
-  runtime_env: Record<string, Record<string, string>>,
+  // deno-lint-ignore no-explicit-any
+  json: Record<string, any>,
   basePath: string,
 ) {
-  const expanded: Record<string, Record<string, string>> = {};
-  for (const [project, env] of Object.entries(runtime_env)) {
-    const expanded_env: Record<string, string> = {};
+  const runtime_env = json.runtime_env as Record<string, string>;
+
+  //FIXME this combines all runtime env which is strictly overkill
+  // for transitive deps that may not need it
+
+  const expanded: Record<string, Set<string>> = {};
+  for (const [_project, env] of Object.entries(runtime_env)) {
     for (const [key, value] of Object.entries(env)) {
+      //TODO expand all moustaches
       const new_value = value.replaceAll(/\$?{{.*prefix}}/g, basePath);
-      expanded_env[key] = new_value;
+      expanded[key] ??= new Set<string>();
+      expanded[key].add(new_value);
     }
-    expanded[project] = expanded_env;
   }
-  return JSON.stringify(expanded);
+
+  // fix https://github.com/pkgxdev/pkgm/pull/30#issuecomment-2678957666
+  if (Deno.build.os == "linux") {
+    expanded["LD_LIBRARY_PATH"] ??= new Set<string>();
+    expanded["LD_LIBRARY_PATH"].add(`${basePath}/lib`);
+  }
+
+  const rv: Record<string, string> = {};
+  for (const [key, set] of Object.entries(expanded)) {
+    rv[key] = [...set].join(":");
+  }
+
+  // DUMB but easiest way to fix a bug
+  // deno-lint-ignore no-explicit-any
+  const rv2: Record<string, any> = {};
+  for (const { project } of json.pkgs as Record<string, string>[]) {
+    rv2[project] = rv;
+  }
+
+  return rv2;
 }
 
 function symlink_with_overwrite(src: string, dst: string) {
