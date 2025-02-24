@@ -14,7 +14,9 @@ function standardPath() {
       homebrewPrefix = "/opt/homebrew"; // /usr/local is already in the path
       break;
     case "linux":
-      homebrewPrefix = `/home/linuxbrew/.linuxbrew:${Deno.env.get("HOME")}/.linuxbrew`;
+      homebrewPrefix = `/home/linuxbrew/.linuxbrew:${
+        Deno.env.get("HOME")
+      }/.linuxbrew`;
       break;
   }
   if (homebrewPrefix) {
@@ -145,12 +147,13 @@ async function install(args: string[]) {
     runtime_env,
     ...to_install,
   ];
-  let cmd = ""
+  let cmd = "";
   if (needs_sudo) {
     cmd = "/usr/bin/sudo";
     args.unshift(
       "-E", // we already cleared the env, it's safe
-      "env", `PATH=${env.PATH}`,
+      "env",
+      `PATH=${env.PATH}`,
     );
   } else {
     cmd = args.shift()!;
