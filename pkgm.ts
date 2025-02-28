@@ -58,6 +58,15 @@ if (parsedArgs.help) {
     case "li":
       await install(args, `${Deno.env.get("HOME")!}/.local`);
       break;
+    case "shim":
+      // this uses the old behavior of pkgx v1, which is to install to ~/.local/bin
+      // if we want to write to /usr/local, we need to use sudo
+      await shim(args, `${Deno.env.get("HOME")!}/.local`);
+      // await shim(args, "/usr/local");
+      break;
+    // case "local-shim":
+    //   await shim(args, `${Deno.env.get("HOME")!}/.local`);
+    //   break;
     case "uninstall":
     case "rm":
     case "list":
@@ -95,35 +104,9 @@ async function install(args: string[], basePath: string) {
     Deno.exit(1);
   }
 
-  args = args.map((x) => `+${x}`);
-
-  const env: Record<string, string> = {
-    "PATH": standardPath(),
-  };
   const pkgx = get_pkgx();
-  const set = (key: string) => {
-    const x = Deno.env.get(key);
-    if (x) env[key] = x;
-  };
-  set("HOME");
-  set("PKGX_DIR");
 
-  const proc = new Deno.Command(pkgx, {
-    args: [...args, "--json=v1"],
-    stdout: "piped",
-    env,
-    clearEnv: true,
-  })
-    .spawn();
-
-  let status = await proc.status;
-
-  if (!status.success) {
-    Deno.exit(status.code);
-  }
-
-  const out = await proc.output();
-  const json = JSON.parse(new TextDecoder().decode(out.stdout));
+  const [json, env] = await query_pkgx(pkgx, args);
   // deno-lint-ignore no-explicit-any
   const pkg_prefixes = json.pkgs.map((x: any) => `${x.project}/v${x.version}`);
 
@@ -158,7 +141,7 @@ async function install(args: string[], basePath: string) {
   } else {
     cmd = args.shift()!;
   }
-  status = await new Deno.Command(cmd, { args, env, clearEnv: true })
+  const status = await new Deno.Command(cmd, { args, env, clearEnv: true })
     .spawn().status;
   Deno.exit(status.code);
 }
@@ -213,6 +196,66 @@ async function sudo_install(
       }
     }
   }
+}
+
+async function shim(args: string[], basePath: string) {
+  const pkgx = get_pkgx();
+
+  await ensureDir(join(basePath, "bin"));
+
+  const json = (await query_pkgx(pkgx, args))[0];
+
+  for (const pkg of json.pkgs) {
+    for (const bin of ["bin", "sbin"]) {
+      const bin_prefix = join(pkg.path, bin);
+      if (!existsSync(bin_prefix)) continue;
+      for await (const entry of Deno.readDir(bin_prefix)) {
+        if (!entry.isFile && !entry.isSymlink) continue;
+        const name = entry.name;
+        const shim = "#!/bin/sh\n\n" +
+          `exec ${pkgx} +${pkg.project}=${pkg.version} -- ${name} "$@"\n`;
+
+        if (existsSync(join(basePath, "bin", name))) {
+          await Deno.remove(join(basePath, "bin", name));
+        }
+
+        await Deno.writeTextFile(join(basePath, "bin", name), shim, {
+          mode: 0o755,
+        });
+      }
+    }
+  }
+}
+
+async function query_pkgx(pkgx: string, args: string[]) {
+  args = args.map((x) => `+${x}`);
+
+  const env: Record<string, string> = {
+    "PATH": standardPath(),
+  };
+  const set = (key: string) => {
+    const x = Deno.env.get(key);
+    if (x) env[key] = x;
+  };
+  set("HOME");
+  set("PKGX_DIR");
+
+  const proc = new Deno.Command(pkgx, {
+    args: [...args, "--json=v1"],
+    stdout: "piped",
+    env,
+    clearEnv: true,
+  })
+    .spawn();
+
+  const status = await proc.status;
+
+  if (!status.success) {
+    Deno.exit(status.code);
+  }
+
+  const out = await proc.output();
+  return [JSON.parse(new TextDecoder().decode(out.stdout)), env];
 }
 
 async function mirror_directory(dst: string, src: string, prefix: string) {
