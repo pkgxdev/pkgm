@@ -27,6 +27,11 @@ $ pkgm local-install git
 # ^^ installs git to ~/.local. ie. you get ~/.local/bin/git
 # `pkgm li git` is easier to type and remember
 
+$ pkgm shim git
+# ^^ creates a shim for git in ~/.local/bin
+# these shims mimic the pkgx v1 lazy-loading shims, and are desirable for
+# certain types of self-healing and dev-setup containers, among other things
+
 $ pkgm list
 # ^^ lists what is installed
 
