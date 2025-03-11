@@ -1,5 +1,9 @@
-#!/usr/bin/env -S pkgx --quiet deno^2.1 run --ext=ts --allow-sys=uid --allow-run --allow-env=PKGX_DIR,HOMEBREW_PREFIX,HOME,PATH --allow-read --allow-write
-import { Path, SemVer, semver } from "https://deno.land/x/libpkgx@v0.20.3/mod.ts";
+#!/usr/bin/env -S pkgx --quiet deno^2.1 run --ext=ts --allow-sys=uid --allow-run --allow-env --allow-read --allow-write --allow-ffi
+import {
+  Path,
+  SemVer,
+  semver,
+} from "https://deno.land/x/libpkgx@v0.20.3/mod.ts";
 import { dirname, fromFileUrl, join } from "jsr:@std/path@^1";
 import { ensureDir, existsSync, walk } from "jsr:@std/fs@^1";
 import { parseArgs } from "jsr:@std/cli@^1";
@@ -66,6 +70,10 @@ if (parsedArgs.help) {
       break;
     case "uninstall":
     case "rm":
+      for (const arg of args) {
+        await uninstall(arg);
+      }
+      break;
     case "list":
     case "ls":
       for await (const path of ls()) {
@@ -424,10 +432,13 @@ function get_pkgx() {
 }
 
 async function* ls() {
-  for (const path of [Path.root.join("/usr/local/pkgs"), Path.home().join(".local/pkgs")]) {
+  for (
+    const path of [new Path("/usr/local/pkgs"), Path.home().join(".local/pkgs")]
+  ) {
+    if (!path.isDirectory()) continue;
     const dirs = [path];
     let dir: Path | undefined;
-    while (dir = dirs.pop()) {
+    while ((dir = dirs.pop()) != undefined) {
       for await (const [path, { name, isDirectory, isSymlink }] of dir.ls()) {
         if (!isDirectory || isSymlink) continue;
         if (/^v\d+\./.test(name)) {
@@ -436,6 +447,102 @@ async function* ls() {
           dirs.push(path);
         }
       }
+    }
+  }
+}
+
+import { hooks, plumbing } from "https://deno.land/x/libpkgx@v0.20.3/mod.ts";
+
+async function uninstall(arg: string) {
+  let found: { project: string } | undefined =
+    (await hooks.usePantry().find(arg))?.[0];
+  if (!found) {
+    found = await plumbing.which(arg);
+  }
+  if (!found) throw new Error(`pkg not found: ${arg}`);
+
+  const set = new Set<string>();
+  const files: Path[] = [];
+  let dirs: Path[] = [];
+  const pkg_dirs: Path[] = [];
+  for (const root of [new Path("/usr/local"), Path.home().join(".local")]) {
+    const dir = root.join("pkgs", found.project).isDirectory();
+    if (!dir) continue;
+    pkg_dirs.push(dir);
+    for await (const [pkgdir, { isDirectory }] of dir.ls()) {
+      if (!isDirectory) continue;
+      for await (const { path, isDirectory } of walk(pkgdir.string)) {
+        const leaf = new Path(path).relative({ to: pkgdir });
+        const resolved_path = root.join(leaf);
+        if (set.has(resolved_path.string)) continue;
+        if (!resolved_path.exists()) continue;
+        if (isDirectory) {
+          dirs.push(resolved_path);
+        } else {
+          files.push(resolved_path);
+        }
+      }
+    }
+  }
+
+  // we need to delete this in a heirachical fashion or they don’t delete
+  dirs = dirs.sort().reverse();
+
+  if (files.length == 0) {
+    console.error("not installed");
+    Deno.exit(1);
+  }
+
+  const needs_sudo = files.some((p) => p.string.startsWith("/usr/local"));
+  if (needs_sudo) {
+    {
+      const { success, code } = await new Deno.Command("/usr/bin/sudo", {
+        args: ["rm", ...files.map((p) => p.string)],
+      }).spawn().status;
+      if (!success) Deno.exit(code);
+    }
+    {
+      await new Deno.Command("/usr/bin/sudo", {
+        args: ["rmdir", ...dirs.map((p) => p.string)],
+        stderr: "null",
+      }).spawn().status;
+    }
+
+    const { success, code } = await new Deno.Command("/usr/bin/sudo", {
+      args: [
+        "rm",
+        "-rf",
+        ...pkg_dirs.map((p) => p.string),
+        ...pkg_dirs.map((x) => x.parent().string),
+      ],
+    }).spawn().status;
+    if (!success) Deno.exit(code);
+
+    await new Deno.Command("/usr/bin/sudo", {
+      args: [
+        "rmdir",
+        "/usr/local/pkgs",
+        Path.home().join(".local/pkgs").string,
+      ],
+      stderr: "null",
+    }).spawn().status;
+  } else {
+    for (const path of files) {
+      if (!path.isDirectory()) {
+        Deno.removeSync(path.string);
+      }
+    }
+    for (const path of dirs) {
+      if (path.isDirectory()) {
+        try {
+          Deno.removeSync(path.string);
+        } catch {
+          // some dirs will not be removable
+        }
+      }
+    }
+    for (const path of pkg_dirs) {
+      Deno.removeSync(path.string, { recursive: true });
     }
   }
 }

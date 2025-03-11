@@ -42,6 +42,9 @@ jobs:
 
       - run: ./pkgm.ts i git
       - run: /usr/local/bin/git --version
+      - run: ./pkgm.ts ls | grep /usr/local/pkgs/git-scm.org
+      - run: ./pkgm.ts rm git
+      - run: test ! -f /usr/local/bin/git
 
       - run: ./pkgm.ts i pkgx.sh/brewkit
       - run: /usr/local/bin/bk --help
