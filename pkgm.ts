@@ -1,4 +1,4 @@
-#!/usr/bin/env -S pkgx --quiet deno^2.1 run --ext=ts --allow-sys=uid --allow-run --allow-env=PKGX_DIR,HOMEBREW_PREFIX,HOME,PATH --allow-read
+#!/usr/bin/env -S pkgx --quiet deno^2.1 run --ext=ts --allow-sys=uid --allow-run --allow-env=PKGX_DIR,HOMEBREW_PREFIX,HOME,PATH --allow-read --allow-write
 import { SemVer, semver } from "https://deno.land/x/libpkgx@v0.20.3/mod.ts";
 import { dirname, fromFileUrl, join } from "jsr:@std/path@^1";
 import { ensureDir, existsSync } from "jsr:@std/fs@^1";
@@ -212,8 +212,8 @@ async function shim(args: string[], basePath: string) {
       for await (const entry of Deno.readDir(bin_prefix)) {
         if (!entry.isFile && !entry.isSymlink) continue;
         const name = entry.name;
-        const shim = "#!/bin/sh\n\n" +
-          `exec ${pkgx} +${pkg.project}=${pkg.version} -- ${name} "$@"\n`;
+        const shim =
+          `#!/usr/bin/env -S pkgx +${pkg.project}=${pkg.version} --shebang --quiet -- ${name}`;
 
         if (existsSync(join(basePath, "bin", name))) {
           await Deno.remove(join(basePath, "bin", name));

@@ -31,6 +31,7 @@ $ pkgm shim git
 # ^^ creates a shim for git in ~/.local/bin
 # these shims mimic the pkgx v1 lazy-loading shims, and are desirable for
 # certain types of self-healing and dev-setup containers, among other things
+# requires pkgx^2.4.0 for --shebang option
 
 $ pkgm list
 # ^^ lists what is installed
