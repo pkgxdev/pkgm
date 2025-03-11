@@ -213,7 +213,7 @@ async function shim(args: string[], basePath: string) {
         if (!entry.isFile && !entry.isSymlink) continue;
         const name = entry.name;
         const shim =
-          `#!/usr/bin/env -S pkgx +${pkg.project}=${pkg.version} --shebang --quiet -- ${name}`;
+          `#!/usr/bin/env -S pkgx --shebang --quiet +${pkg.project}=${pkg.version} -- ${name}`;
 
         if (existsSync(join(basePath, "bin", name))) {
           await Deno.remove(join(basePath, "bin", name));
