@@ -1,7 +1,7 @@
 #!/usr/bin/env -S pkgx --quiet deno^2.1 run --ext=ts --allow-sys=uid --allow-run --allow-env=PKGX_DIR,HOMEBREW_PREFIX,HOME,PATH --allow-read --allow-write
-import { SemVer, semver } from "https://deno.land/x/libpkgx@v0.20.3/mod.ts";
+import { Path, SemVer, semver } from "https://deno.land/x/libpkgx@v0.20.3/mod.ts";
 import { dirname, fromFileUrl, join } from "jsr:@std/path@^1";
-import { ensureDir, existsSync } from "jsr:@std/fs@^1";
+import { ensureDir, existsSync, walk } from "jsr:@std/fs@^1";
 import { parseArgs } from "jsr:@std/cli@^1";
 
 function standardPath() {
@@ -58,24 +58,24 @@ if (parsedArgs.help) {
     case "li":
       await install(args, `${Deno.env.get("HOME")!}/.local`);
       break;
+    case "stub":
     case "shim":
       // this uses the old behavior of pkgx v1, which is to install to ~/.local/bin
       // if we want to write to /usr/local, we need to use sudo
       await shim(args, `${Deno.env.get("HOME")!}/.local`);
-      // await shim(args, "/usr/local");
       break;
-    // case "local-shim":
-    //   await shim(args, `${Deno.env.get("HOME")!}/.local`);
-    //   break;
     case "uninstall":
     case "rm":
     case "list":
     case "ls":
+      for await (const path of ls()) {
+        console.log(path);
+      }
+      break;
     case "up":
     case "update":
     case "pin":
     case "outdated":
-    case "stub":
       console.error("%cunimplemented. soz. U EARLY.", "color: red");
       Deno.exit(1);
       break;
@@ -421,4 +421,21 @@ function get_pkgx() {
     }
   }
   throw new Error("no `pkgx` found in `$PATH`");
+}
+
+async function* ls() {
+  for (const path of [Path.root.join("/usr/local/pkgs"), Path.home().join(".local/pkgs")]) {
+    const dirs = [path];
+    let dir: Path | undefined;
+    while (dir = dirs.pop()) {
+      for await (const [path, { name, isDirectory, isSymlink }] of dir.ls()) {
+        if (!isDirectory || isSymlink) continue;
+        if (/^v\d+\./.test(name)) {
+          yield path;
+        } else {
+          dirs.push(path);
+        }
+      }
+    }
+  }
 }
