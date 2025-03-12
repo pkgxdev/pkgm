@@ -1,6 +1,8 @@
 #!/usr/bin/env -S pkgx --quiet deno^2.1 run --ext=ts --allow-sys=uid --allow-run --allow-env --allow-read --allow-write --allow-ffi
 import {
+  hooks,
   Path,
+  plumbing,
   SemVer,
   semver,
 } from "https://deno.land/x/libpkgx@v0.20.3/mod.ts";
@@ -450,8 +452,6 @@ async function* ls() {
     }
   }
 }
-
-import { hooks, plumbing } from "https://deno.land/x/libpkgx@v0.20.3/mod.ts";
 
 async function uninstall(arg: string) {
   let found: { project: string } | undefined =
