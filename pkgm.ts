@@ -122,7 +122,7 @@ async function install(args: string[], basePath: string) {
 
   const self = fromFileUrl(import.meta.url);
   const pkgx_dir = Deno.env.get("PKGX_DIR") || `${Deno.env.get("HOME")}/.pkgx`;
-  const needs_sudo = Deno.uid() != 0 && basePath === "/usr/local";
+  const needs_sudo = basePath === "/usr/local" && !writable("/usr/local");
 
   const runtime_env = expand_runtime_env(json, basePath);
 
@@ -493,7 +493,8 @@ async function uninstall(arg: string) {
     Deno.exit(1);
   }
 
-  const needs_sudo = files.some((p) => p.string.startsWith("/usr/local"));
+  const needs_sudo = files.some((p) => p.string.startsWith("/usr/local")) &&
+    !writable("/usr/local");
   if (needs_sudo) {
     {
       const { success, code } = await new Deno.Command("/usr/bin/sudo", {
@@ -544,5 +545,16 @@ async function uninstall(arg: string) {
     for (const path of pkg_dirs) {
       Deno.removeSync(path.string, { recursive: true });
     }
+  }
+}
+
+function writable(path: string) {
+  try {
+    //FIXME this is pretty gross
+    Deno.mkdirSync(join(path, ".writable_test"), { recursive: true });
+    Deno.remove(join(path, ".writable_test"));
+    return true;
+  } catch {
+    return false;
   }
 }
