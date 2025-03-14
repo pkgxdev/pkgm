@@ -1,4 +1,4 @@
-#!/usr/bin/env -S pkgx --quiet deno^2.1 run --ext=ts --allow-sys=uid --allow-run --allow-env --allow-read --allow-write --allow-ffi
+#!/usr/bin/env -S pkgx --quiet deno^2.1 run --ext=ts --allow-sys=uid --allow-run --allow-env --allow-read --allow-write --allow-ffi --allow-net=dist.pkgx.dev
 import {
   hooks,
   Installation,
@@ -10,6 +10,7 @@ import {
 import { dirname, fromFileUrl, join } from "jsr:@std/path@^1";
 import { ensureDir, existsSync, walk } from "jsr:@std/fs@^1";
 import { parseArgs } from "jsr:@std/cli@^1";
+import hydrate from "https://deno.land/x/libpkgx@v0.20.3/src/plumbing/hydrate.ts";
 
 function standardPath() {
   let path = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
@@ -87,8 +88,7 @@ if (parsedArgs.help) {
     case "update":
     case "pin":
     case "outdated":
-      console.error("%cunimplemented. soz. U EARLY.", "color: red");
-      Deno.exit(1);
+      await outdated();
       break;
     case "sudo-install": {
       const [pkgx_dir, runtime_env, basePath, ...paths] = args;
@@ -589,5 +589,63 @@ function writable(path: string) {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function outdated() {
+  const pkgs: Installation[] = [];
+  for await (const pkg of walk_pkgs()) {
+    pkgs.push(pkg);
+  }
+
+  const { pkgs: raw_graph } = await hydrate(
+    pkgs.map((x) => ({
+      project: x.pkg.project,
+      constraint: new semver.Range(`^${x.pkg.version}`),
+    })),
+  );
+  const graph: Record<string, semver.Range> = {};
+  for (const { project, constraint } of raw_graph) {
+    graph[project] = constraint;
+  }
+
+  for (const { path, pkg } of pkgs) {
+    const versions = await hooks.useInventory().get(pkg);
+    // console.log(pkg, graph[pkg.project]);
+    const constrained_versions = versions.filter((x) =>
+      graph[pkg.project].satisfies(x) && x.gt(pkg.version)
+    );
+    if (constrained_versions.length) {
+      console.log(
+        pkg.project,
+        "is outdated",
+        pkg.version,
+        "<",
+        constrained_versions.slice(-1)[0],
+        `\x1b[2m${path}\x1b[22m`,
+      );
+    }
+  }
+}
+
+async function* walk_pkgs() {
+  for (
+    const root of [new Path("/usr/local/pkgs"), Path.home().join(".local/bin")]
+  ) {
+    const dirs = [root];
+    let dir: Path | undefined;
+    while ((dir = dirs.pop()) !== undefined) {
+      if (!dir.isDirectory()) continue;
+      for await (const [path, { name, isSymlink, isDirectory }] of dir.ls()) {
+        if (isSymlink || !isDirectory) continue;
+        if (semver.parse(name)) {
+          const project = path.parent().relative({ to: root });
+          const version = new SemVer(path.basename());
+          yield { path, pkg: { project, version } };
+        } else {
+          dirs.push(path);
+        }
+      }
+    }
   }
 }
