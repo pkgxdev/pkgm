@@ -1,6 +1,7 @@
 #!/usr/bin/env -S pkgx --quiet deno^2.1 run --ext=ts --allow-sys=uid --allow-run --allow-env --allow-read --allow-write --allow-ffi
 import {
   hooks,
+  Installation,
   Path,
   plumbing,
   SemVer,
@@ -62,13 +63,13 @@ if (parsedArgs.help) {
       break;
     case "local-install":
     case "li":
-      await install(args, `${Deno.env.get("HOME")!}/.local`);
+      await install(args, Path.home().join(".local").string);
       break;
     case "stub":
     case "shim":
       // this uses the old behavior of pkgx v1, which is to install to ~/.local/bin
       // if we want to write to /usr/local, we need to use sudo
-      await shim(args, `${Deno.env.get("HOME")!}/.local`);
+      await shim(args, Path.home().join(".local").string);
       break;
     case "uninstall":
     case "rm":
@@ -117,8 +118,9 @@ async function install(args: string[], basePath: string) {
   const pkgx = get_pkgx();
 
   const [json, env] = await query_pkgx(pkgx, args);
-  // deno-lint-ignore no-explicit-any
-  const pkg_prefixes = json.pkgs.map((x: any) => `${x.project}/v${x.version}`);
+  const pkg_prefixes = json.pkgs.map((x) =>
+    `${x.pkg.project}/v${x.pkg.version}`
+  );
 
   const self = fromFileUrl(import.meta.url);
   const pkgx_dir = Deno.env.get("PKGX_DIR") || `${Deno.env.get("HOME")}/.pkgx`;
@@ -217,13 +219,19 @@ async function shim(args: string[], basePath: string) {
 
   for (const pkg of json.pkgs) {
     for (const bin of ["bin", "sbin"]) {
-      const bin_prefix = join(pkg.path, bin);
-      if (!existsSync(bin_prefix)) continue;
-      for await (const entry of Deno.readDir(bin_prefix)) {
+      const bin_prefix = pkg.path.join(bin);
+      if (!bin_prefix.exists()) continue;
+      for await (const entry of Deno.readDir(bin_prefix.string)) {
         if (!entry.isFile && !entry.isSymlink) continue;
         const name = entry.name;
+        const quick_shim = Deno.build.os == "darwin" &&
+          pkgx == "/usr/local/bin/pkgx";
+        const interpreter = quick_shim
+          ? "/usr/local/bin/pkgx"
+          : "/usr/bin/env -S pkgx";
+
         const shim =
-          `#!/usr/bin/env -S pkgx --shebang --quiet +${pkg.project}=${pkg.version} -- ${name}`;
+          `#!${interpreter} --shebang --quiet +${pkg.pkg.project}=${pkg.pkg.version} -- ${name}`;
 
         if (existsSync(join(basePath, "bin", name))) {
           await Deno.remove(join(basePath, "bin", name));
@@ -237,7 +245,17 @@ async function shim(args: string[], basePath: string) {
   }
 }
 
-async function query_pkgx(pkgx: string, args: string[]) {
+interface JsonResponse {
+  runtime_env: Record<string, Record<string, string>>;
+  pkgs: Installation[];
+  env: Record<string, Record<string, string>>;
+  pkg: Installation;
+}
+
+async function query_pkgx(
+  pkgx: string,
+  args: string[],
+): Promise<[JsonResponse, Record<string, string>]> {
   args = args.map((x) => `+${x}`);
 
   const env: Record<string, string> = {
@@ -265,7 +283,23 @@ async function query_pkgx(pkgx: string, args: string[]) {
   }
 
   const out = await proc.output();
-  return [JSON.parse(new TextDecoder().decode(out.stdout)), env];
+  const json = JSON.parse(new TextDecoder().decode(out.stdout));
+  const pkgs =
+    (json.pkgs as { path: string; project: string; version: string }[]).map(
+      (x) => {
+        return {
+          path: new Path(x.path),
+          pkg: { project: x.project, version: new SemVer(x.version) },
+        };
+      },
+    );
+  const pkg = pkgs.find((x) => `+${x.pkg.project}` == args[0])!;
+  return [{
+    pkg,
+    pkgs,
+    env: json.env,
+    runtime_env: json.runtime_env,
+  }, env];
 }
 
 async function mirror_directory(dst: string, src: string, prefix: string) {
@@ -376,11 +410,10 @@ async function create_v_symlinks(prefix: string) {
 }
 
 function expand_runtime_env(
-  // deno-lint-ignore no-explicit-any
-  json: Record<string, any>,
+  json: JsonResponse,
   basePath: string,
 ) {
-  const runtime_env = json.runtime_env as Record<string, string>;
+  const { runtime_env, pkgs } = json;
 
   //FIXME this combines all runtime env which is strictly overkill
   // for transitive deps that may not need it
@@ -388,8 +421,9 @@ function expand_runtime_env(
   const expanded: Record<string, Set<string>> = {};
   for (const [_project, env] of Object.entries(runtime_env)) {
     for (const [key, value] of Object.entries(env)) {
-      //TODO expand all moustaches
-      const new_value = value.replaceAll(/\$?{{.*prefix}}/g, basePath);
+      const pkg = pkgs.find((x) => x.pkg.project == _project)!.pkg;
+      const mm = hooks.useMoustaches().tokenize.all(pkg, json.pkgs);
+      const new_value = hooks.useMoustaches().apply(value, mm);
       expanded[key] ??= new Set<string>();
       expanded[key].add(new_value);
     }
@@ -407,9 +441,8 @@ function expand_runtime_env(
   }
 
   // DUMB but easiest way to fix a bug
-  // deno-lint-ignore no-explicit-any
-  const rv2: Record<string, any> = {};
-  for (const { project } of json.pkgs as Record<string, string>[]) {
+  const rv2: Record<string, Record<string, string>> = {};
+  for (const { pkg: { project } } of json.pkgs) {
     rv2[project] = rv;
   }
 
