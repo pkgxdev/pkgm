@@ -65,6 +65,10 @@ jobs:
       - run: ./pkgm.ts shim semverator
       - run: ~/.local/bin/semverator validate 1.0.0
 
+      - run: ./pkgm.ts i hyperfine@1.18
+      - run: ./pkgm.ts outdated | grep hyperfine
+      - run: ./pkgm.ts update
+
       # TODO pending: https://github.com/pkgxdev/pantry/issues/8487
       # - run: ./pkgm.ts i xpra.org # https://github.com/pkgxdev/pkgm/issues/13
       # - run: ls -la /usr/local/pkgs/xpra.org/v6.2.3/venv/bin

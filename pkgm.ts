@@ -6,6 +6,7 @@ import {
   plumbing,
   SemVer,
   semver,
+  utils,
 } from "https://deno.land/x/libpkgx@v0.20.3/mod.ts";
 import { dirname, fromFileUrl, join } from "jsr:@std/path@^1";
 import { ensureDir, existsSync, walk } from "jsr:@std/fs@^1";
@@ -86,7 +87,13 @@ if (parsedArgs.help) {
       break;
     case "up":
     case "update":
+    case "upgrade":
+      await update();
+      break;
+
     case "pin":
+      console.error("%cU EARLY! soz, not implemented", "color:red");
+      Deno.exit(1);
       break;
     case "outdated":
       await outdated();
@@ -648,5 +655,68 @@ async function* walk_pkgs() {
         }
       }
     }
+  }
+}
+
+async function update() {
+  const pkgs: Installation[] = [];
+  for await (const pkg of walk_pkgs()) {
+    pkgs.push(pkg);
+  }
+
+  const { pkgs: raw_graph } = await hydrate(
+    pkgs.map((x) => ({
+      project: x.pkg.project,
+      constraint: new semver.Range(`^${x.pkg.version}`),
+    })),
+  );
+  const graph: Record<string, semver.Range> = {};
+  for (const { project, constraint } of raw_graph) {
+    graph[project] = constraint;
+  }
+
+  const local_update_list = [];
+  const system_update_list = [];
+
+  for (const { path, pkg } of pkgs) {
+    const versions = await hooks.useInventory().get(pkg);
+    // console.log(pkg, graph[pkg.project]);
+    const constrained_versions = versions.filter((x) =>
+      graph[pkg.project].satisfies(x) && x.gt(pkg.version)
+    );
+
+    if (constrained_versions.length) {
+      const pkgspec = `${pkg.project}=${constrained_versions.slice(-1)[0]}`;
+      if (path.string.startsWith("/usr/local")) {
+        system_update_list.push(pkgspec);
+      } else {
+        local_update_list.push(pkgspec);
+      }
+    }
+  }
+
+  for (const pkgspec of local_update_list) {
+    const pkg = utils.pkg.parse(pkgspec);
+    console.log(
+      "updating:",
+      Path.home().join(".local/pkgs", pkg.project),
+      "to",
+      pkg.constraint.single(),
+    );
+  }
+  for (const pkgspec of system_update_list) {
+    const pkg = utils.pkg.parse(pkgspec);
+    console.log(
+      "updating:",
+      new Path("/usr/local/pkgs").join(pkg.project),
+      "to",
+      pkg.constraint.single(),
+    );
+  }
+
+  if (local_update_list.length) {
+    await install(local_update_list, Path.home().join(".local/bin").string);
+  } else {
+    await install(system_update_list, "/usr/local");
   }
 }
