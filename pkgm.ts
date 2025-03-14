@@ -87,6 +87,7 @@ if (parsedArgs.help) {
     case "up":
     case "update":
     case "pin":
+      break;
     case "outdated":
       await outdated();
       break;
