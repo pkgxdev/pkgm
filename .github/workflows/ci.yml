@@ -67,7 +67,9 @@ jobs:
 
       - run: ./pkgm.ts i hyperfine@1.18
       - run: ./pkgm.ts outdated | grep hyperfine
+      - run: if pkgx semverator satisfies '>=1.19' "$(hyperfine --version | cut -f 2 -d ' ')"; then false; fi
       - run: ./pkgm.ts update
+      - run: pkgx semverator satisfies '>=1.19' "$(hyperfine --version | cut -f 2 -d ' ')"
 
       # TODO pending: https://github.com/pkgxdev/pantry/issues/8487
       # - run: ./pkgm.ts i xpra.org # https://github.com/pkgxdev/pkgm/issues/13
