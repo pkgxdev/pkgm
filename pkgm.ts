@@ -52,7 +52,7 @@ const parsedArgs = parseArgs(Deno.args, {
   boolean: ["help", "version", "pin"],
 });
 
-if (parsedArgs.help) {
+if (parsedArgs.help || parsedArgs._[0] == "help") {
   const { code } = await new Deno.Command("pkgx", {
     args: [
       "glow",
