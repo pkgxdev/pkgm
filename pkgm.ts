@@ -239,7 +239,7 @@ async function shim(args: string[], basePath: string) {
           : "/usr/bin/env -S pkgx";
 
         const shim =
-          `#!${interpreter} --shebang --quiet +${pkg.pkg.project}=${pkg.pkg.version} -- ${name}`;
+          `#!${interpreter} --shebang --quiet +${pkg.pkg.project}=${pkg.pkg.version} -- ${name} "$@"\n`;
 
         if (existsSync(join(basePath, "bin", name))) {
           await Deno.remove(join(basePath, "bin", name));
