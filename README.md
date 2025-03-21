@@ -48,10 +48,6 @@ $ pkgm pin git
 # ^^ prevents the installed git from being updated
 ```
 
-> [!NOTE]
->
-> Commands call `sudo` as needed.
-
 > [!TIP]
 >
 > - `pkgm i` is an alias for `pkgm install`
