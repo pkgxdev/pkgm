@@ -68,7 +68,10 @@ if (parsedArgs.help || parsedArgs._[0] == "help") {
   switch (parsedArgs._[0]) {
     case "install":
     case "i":
-      await install(args, install_prefix().string);
+      {
+        const rv = await install(args, install_prefix().string);
+        console.log(rv.join("\n"));
+      }
       break;
     case "local-install":
     case "li":
@@ -159,6 +162,8 @@ async function install(args: string[], basePath: string) {
     await create_v_symlinks(join(dst, "pkgs", pkg_prefix));
   }
 
+  const rv = [];
+
   for (const [project, env] of Object.entries(runtime_env)) {
     if (project == "pkgx.sh") continue;
 
@@ -185,9 +190,13 @@ async function install(args: string[], basePath: string) {
         await Deno.remove(to_stub); //FIXME inefficient to symlink for no reason
         await Deno.writeTextFile(to_stub, sh);
         await Deno.chmod(to_stub, 0o755);
+
+        rv.push(to_stub);
       }
     }
   }
+
+  return rv;
 }
 
 async function shim(args: string[], basePath: string) {
