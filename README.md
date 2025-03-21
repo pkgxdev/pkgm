@@ -16,16 +16,15 @@ Install `pkgx` packages to `/usr/local`.
 
 ```sh
 $ pkgm install git
-# ^^ installs latest git
+# ^^ installs latest git to ~/.local. ie. you get ~/.local/bin/git
 
 $ pkgm install git@2.41
 # ^^ installs git^2.41 or switches out the installed git to 2.41
 
 $ pkgm uninstall git
 
-$ pkgm local-install git
-# ^^ installs git to ~/.local. ie. you get ~/.local/bin/git
-# `pkgm li git` is easier to type and remember
+$ sudo pkgm install git
+# ^^ installs git to /usr/local. ie. you get /usr/local/bin/git
 
 $ pkgm shim git
 # ^^ creates a shim for git in ~/.local/bin
@@ -40,7 +39,10 @@ $ pkgm outdated
 # ^^ lists outdated installations
 
 $ pkgm update
-# ^^ updates installed packages to latest versions
+# ^^ updates ~/.local packages to latest versions
+
+$ sudo pkgm update
+# ^^ updates /usr/local packages to latest versions
 
 $ pkgm pin git
 # ^^ prevents the installed git from being updated

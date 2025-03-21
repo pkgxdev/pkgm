@@ -35,32 +35,29 @@ jobs:
       - uses: actions/checkout@v4
       - uses: pkgxdev/setup@v3
 
-      - run: |
-          if [[ "$(/usr/local/bin/pkgx --version)" != "pkgx 2"* ]]; then
-            exit 1
-          fi
-
       - run: ./pkgm.ts i git
-      - run: /usr/local/bin/git --version
-      - run: ./pkgm.ts ls | grep /usr/local/pkgs/git-scm.org
+      - run: ~/.local/bin/git --version
+      - run: "! test -f /usr/local/bin/git"
+      - run: ./pkgm.ts ls | grep .local/pkgs/git-scm.org
       - run: ./pkgm.ts rm git
-      - run: test ! -f /usr/local/bin/git
+      - run: test ! -f ~/.local/bin/git
 
       - run: ./pkgm.ts i pkgx.sh/brewkit
-      - run: /usr/local/bin/bk --help
+      - run: ~/.local/bin/bk --help
 
       # check repeats work
-      - run: rm /usr/local/bin/bk
+      - run: rm ~/.local/bin/bk
       - run: test ! -f /usr/local/bin/bk
       - run: ./pkgm.ts i pkgx.sh/brewkit
-      - run: /usr/local/bin/bk --help
+      - run: ~/.local/bin/bk --help
 
-      - run: ./pkgm.ts li gum
+      - run: ./pkgm.ts i gum
       - run: ~/.local/bin/gum --version
 
+      # test a thing with deps
       # https://github.com/pkgxdev/pkgm/issues/24
       - run: ./pkgm.ts i curl
-      - run: /usr/local/bin/curl -L pkgx.sh
+      - run: ~/.local/bin/curl -L pkgx.sh
 
       - run: ./pkgm.ts shim semverator
       - run: ~/.local/bin/semverator validate 1.0.0

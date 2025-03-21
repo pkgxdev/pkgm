@@ -8,10 +8,17 @@ import {
   semver,
   utils,
 } from "https://deno.land/x/libpkgx@v0.20.3/mod.ts";
-import { dirname, fromFileUrl, join } from "jsr:@std/path@^1";
+import { dirname, join } from "jsr:@std/path@^1";
 import { ensureDir, existsSync, walk } from "jsr:@std/fs@^1";
 import { parseArgs } from "jsr:@std/cli@^1";
 import hydrate from "https://deno.land/x/libpkgx@v0.20.3/src/plumbing/hydrate.ts";
+
+const out = new Deno.Command("pkgx", { args: ["--version"] }).outputSync();
+const match = new TextDecoder().decode(out.stdout).match(/pkgx 2.(\d+)/);
+if (!match || parseInt(match[1]) < 4) {
+  console.error("pkgm requires pkgx 2.4.0 or later");
+  Deno.exit(1);
+}
 
 function standardPath() {
   let path = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
@@ -61,22 +68,34 @@ if (parsedArgs.help) {
   switch (parsedArgs._[0]) {
     case "install":
     case "i":
-      await install(args, "/usr/local");
+      await install(args, install_prefix().string);
       break;
     case "local-install":
     case "li":
-      await install(args, Path.home().join(".local").string);
+      if (install_prefix().string != "/usr/local") {
+        await install(args, Path.home().join(".local").string);
+      } else {
+        console.error("deprecated: use `pkgm install` without `sudo` instead");
+      }
       break;
     case "stub":
     case "shim":
-      // this uses the old behavior of pkgx v1, which is to install to ~/.local/bin
-      // if we want to write to /usr/local, we need to use sudo
-      await shim(args, Path.home().join(".local").string);
+      // equivalent to `pkgx^1 install`
+      // shims often work just fine, but sometimes don’t.
+      // when they don’t it is usually because the consuming tool makes assumptions about
+      // where files for the package in question reside.
+      await shim(args, install_prefix().string);
       break;
     case "uninstall":
     case "rm":
-      for (const arg of args) {
-        await uninstall(arg);
+      {
+        let all_success = true;
+        for (const arg of args) {
+          if (!await uninstall(arg)) {
+            all_success = false;
+          }
+        }
+        Deno.exit(all_success ? 0 : 1);
       }
       break;
     case "list":
@@ -98,15 +117,6 @@ if (parsedArgs.help) {
     case "outdated":
       await outdated();
       break;
-    case "sudo-install": {
-      const [pkgx_dir, runtime_env, basePath, ...paths] = args;
-      const parsed_runtime_env = JSON.parse(runtime_env) as Record<
-        string,
-        Record<string, string>
-      >;
-      await sudo_install(pkgx_dir, paths, parsed_runtime_env, basePath);
-      break;
-    }
     default:
       if (Deno.args.length === 0) {
         console.error("https://github.com/pkgxdev/pkgm");
@@ -125,53 +135,15 @@ async function install(args: string[], basePath: string) {
 
   const pkgx = get_pkgx();
 
-  const [json, env] = await query_pkgx(pkgx, args);
+  const [json] = await query_pkgx(pkgx, args);
   const pkg_prefixes = json.pkgs.map((x) =>
     `${x.pkg.project}/v${x.pkg.version}`
   );
 
-  const self = fromFileUrl(import.meta.url);
   const pkgx_dir = Deno.env.get("PKGX_DIR") || `${Deno.env.get("HOME")}/.pkgx`;
-  const needs_sudo = basePath === "/usr/local" && !writable("/usr/local");
 
   const runtime_env = expand_runtime_env(json, basePath);
 
-  args = [
-    pkgx,
-    "deno^2.1",
-    "run",
-    "--ext=ts",
-    "--allow-write", // cannot be qualified ∵ `Deno.link()` requires full access for some reason
-    "--allow-read", //  same ^^ 😕
-    self,
-    "sudo-install",
-    pkgx_dir,
-    JSON.stringify(runtime_env),
-    basePath,
-    ...pkg_prefixes,
-  ];
-  let cmd = "";
-  if (needs_sudo) {
-    cmd = "/usr/bin/sudo";
-    args.unshift(
-      "-E", // we already cleared the env, it's safe
-      "env",
-      `PATH=${env.PATH}`,
-    );
-  } else {
-    cmd = args.shift()!;
-  }
-  const status = await new Deno.Command(cmd, { args, env, clearEnv: true })
-    .spawn().status;
-  Deno.exit(status.code);
-}
-
-async function sudo_install(
-  pkgx_dir: string,
-  pkg_prefixes: string[],
-  runtime_env: Record<string, Record<string, string>>,
-  basePath: string,
-) {
   const dst = basePath;
   for (const pkg_prefix of pkg_prefixes) {
     // create ${dst}/pkgs/${prefix}
@@ -275,8 +247,20 @@ async function query_pkgx(
   };
   set("HOME");
   set("PKGX_DIR");
+  set("PKGX_PANTRY_DIR");
+  set("PKGX_DIST_URL");
 
-  const proc = new Deno.Command(pkgx, {
+  const needs_sudo_backwards = install_prefix().string == "/usr/local";
+  const cmd = needs_sudo_backwards ? "/usr/bin/sudo" : pkgx;
+  if (needs_sudo_backwards) {
+    if (!Deno.env.get("SUDO_USER")) {
+      //TODO if no SUDO_USER then probs we are a root shell, if so set PKGX_DIR and skip hard link step
+      throw new Error("SUDO_USER not set, cannot install as root");
+    }
+    args.unshift("-u", Deno.env.get("SUDO_USER")!, pkgx);
+  }
+
+  const proc = new Deno.Command(cmd, {
     args: [...args, "--json=v1"],
     stdout: "piped",
     env,
@@ -500,28 +484,50 @@ async function uninstall(arg: string) {
   if (!found) {
     found = await plumbing.which(arg);
   }
-  if (!found) throw new Error(`pkg not found: ${arg}`);
+  if (!found) {
+    console.error(`no such pkg: ${arg}`);
+    return false;
+  }
 
   const set = new Set<string>();
   const files: Path[] = [];
   let dirs: Path[] = [];
   const pkg_dirs: Path[] = [];
-  for (const root of [new Path("/usr/local"), Path.home().join(".local")]) {
-    const dir = root.join("pkgs", found.project).isDirectory();
-    if (!dir) continue;
-    pkg_dirs.push(dir);
-    for await (const [pkgdir, { isDirectory }] of dir.ls()) {
-      if (!isDirectory) continue;
-      for await (const { path, isDirectory } of walk(pkgdir.string)) {
-        const leaf = new Path(path).relative({ to: pkgdir });
-        const resolved_path = root.join(leaf);
-        if (set.has(resolved_path.string)) continue;
-        if (!resolved_path.exists()) continue;
-        if (isDirectory) {
-          dirs.push(resolved_path);
-        } else {
-          files.push(resolved_path);
-        }
+  const root = install_prefix();
+  const dir = root.join("pkgs", found.project);
+  if (!dir.isDirectory()) {
+    console.error(`not installed: ${dir}`);
+    if (
+      root.string == "/usr/local" &&
+      Path.home().join(".local/pkgs", found.project).isDirectory()
+    ) {
+      console.error(
+        `%c! rerun without \`sudo\` to uninstall ~/.local/pkgs/${found.project}`,
+        "color:yellow",
+      );
+    } else if (new Path("/usr/local/pkgs").join(found.project).isDirectory()) {
+      console.error(
+        `%c! rerun as \`sudo\` to uninstall /usr/local/pkgs/${found.project}`,
+        "color:yellow",
+      );
+    }
+    return false;
+  }
+
+  console.error("%cuninstalling", "color:red", dir);
+
+  pkg_dirs.push(dir);
+  for await (const [pkgdir, { isDirectory }] of dir.ls()) {
+    if (!isDirectory) continue;
+    for await (const { path, isDirectory } of walk(pkgdir.string)) {
+      const leaf = new Path(path).relative({ to: pkgdir });
+      const resolved_path = root.join(leaf);
+      if (set.has(resolved_path.string)) continue;
+      if (!resolved_path.exists()) continue;
+      if (isDirectory) {
+        dirs.push(resolved_path);
+      } else {
+        files.push(resolved_path);
       }
     }
   }
@@ -530,63 +536,28 @@ async function uninstall(arg: string) {
   dirs = dirs.sort().reverse();
 
   if (files.length == 0) {
-    console.error("not installed");
+    console.error("unexpectedly not installed");
     Deno.exit(1);
   }
-
-  const needs_sudo = files.some((p) => p.string.startsWith("/usr/local")) &&
-    !writable("/usr/local");
-  if (needs_sudo) {
-    {
-      const { success, code } = await new Deno.Command("/usr/bin/sudo", {
-        args: ["rm", ...files.map((p) => p.string)],
-      }).spawn().status;
-      if (!success) Deno.exit(code);
-    }
-    {
-      await new Deno.Command("/usr/bin/sudo", {
-        args: ["rmdir", ...dirs.map((p) => p.string)],
-        stderr: "null",
-      }).spawn().status;
-    }
-
-    const { success, code } = await new Deno.Command("/usr/bin/sudo", {
-      args: [
-        "rm",
-        "-rf",
-        ...pkg_dirs.map((p) => p.string),
-        ...pkg_dirs.map((x) => x.parent().string),
-      ],
-    }).spawn().status;
-    if (!success) Deno.exit(code);
-
-    await new Deno.Command("/usr/bin/sudo", {
-      args: [
-        "rmdir",
-        "/usr/local/pkgs",
-        Path.home().join(".local/pkgs").string,
-      ],
-      stderr: "null",
-    }).spawn().status;
-  } else {
-    for (const path of files) {
-      if (!path.isDirectory()) {
-        Deno.removeSync(path.string);
-      }
-    }
-    for (const path of dirs) {
-      if (path.isDirectory()) {
-        try {
-          Deno.removeSync(path.string);
-        } catch {
-          // some dirs will not be removable
-        }
-      }
-    }
-    for (const path of pkg_dirs) {
-      Deno.removeSync(path.string, { recursive: true });
+  for (const path of files) {
+    if (!path.isDirectory()) {
+      Deno.removeSync(path.string);
     }
   }
+  for (const path of dirs) {
+    if (path.isDirectory()) {
+      try {
+        Deno.removeSync(path.string);
+      } catch {
+        // some dirs will not be removable
+      }
+    }
+  }
+  for (const path of pkg_dirs) {
+    Deno.removeSync(path.string, { recursive: true });
+  }
+
+  return true;
 }
 
 function writable(path: string) {
@@ -602,7 +573,10 @@ function writable(path: string) {
 
 async function outdated() {
   const pkgs: Installation[] = [];
-  for await (const pkg of walk_pkgs()) {
+  for await (const pkg of walk_pkgs(new Path("/usr/local/pkgs"))) {
+    pkgs.push(pkg);
+  }
+  for await (const pkg of walk_pkgs(Path.home().join(".local/pkgs"))) {
     pkgs.push(pkg);
   }
 
@@ -636,23 +610,19 @@ async function outdated() {
   }
 }
 
-async function* walk_pkgs() {
-  for (
-    const root of [new Path("/usr/local/pkgs"), Path.home().join(".local/bin")]
-  ) {
-    const dirs = [root];
-    let dir: Path | undefined;
-    while ((dir = dirs.pop()) !== undefined) {
-      if (!dir.isDirectory()) continue;
-      for await (const [path, { name, isSymlink, isDirectory }] of dir.ls()) {
-        if (isSymlink || !isDirectory) continue;
-        if (semver.parse(name)) {
-          const project = path.parent().relative({ to: root });
-          const version = new SemVer(path.basename());
-          yield { path, pkg: { project, version } };
-        } else {
-          dirs.push(path);
-        }
+async function* walk_pkgs(root: Path) {
+  const dirs = [root];
+  let dir: Path | undefined;
+  while ((dir = dirs.pop()) !== undefined) {
+    if (!dir.isDirectory()) continue;
+    for await (const [path, { name, isSymlink, isDirectory }] of dir.ls()) {
+      if (isSymlink || !isDirectory) continue;
+      if (semver.parse(name)) {
+        const project = path.parent().relative({ to: root });
+        const version = new SemVer(path.basename());
+        yield { path, pkg: { project, version } };
+      } else {
+        dirs.push(path);
       }
     }
   }
@@ -660,7 +630,7 @@ async function* walk_pkgs() {
 
 async function update() {
   const pkgs: Installation[] = [];
-  for await (const pkg of walk_pkgs()) {
+  for await (const pkg of walk_pkgs(install_prefix().join("pkgs"))) {
     pkgs.push(pkg);
   }
 
@@ -675,36 +645,21 @@ async function update() {
     graph[project] = constraint;
   }
 
-  const local_update_list = [];
-  const system_update_list = [];
+  const update_list = [];
 
-  for (const { path, pkg } of pkgs) {
+  for (const { pkg } of pkgs) {
     const versions = await hooks.useInventory().get(pkg);
-    // console.log(pkg, graph[pkg.project]);
     const constrained_versions = versions.filter((x) =>
       graph[pkg.project].satisfies(x) && x.gt(pkg.version)
     );
 
     if (constrained_versions.length) {
       const pkgspec = `${pkg.project}=${constrained_versions.slice(-1)[0]}`;
-      if (path.string.startsWith("/usr/local")) {
-        system_update_list.push(pkgspec);
-      } else {
-        local_update_list.push(pkgspec);
-      }
+      update_list.push(pkgspec);
     }
   }
 
-  for (const pkgspec of local_update_list) {
-    const pkg = utils.pkg.parse(pkgspec);
-    console.log(
-      "updating:",
-      Path.home().join(".local/pkgs", pkg.project),
-      "to",
-      pkg.constraint.single(),
-    );
-  }
-  for (const pkgspec of system_update_list) {
+  for (const pkgspec of update_list) {
     const pkg = utils.pkg.parse(pkgspec);
     console.log(
       "updating:",
@@ -714,9 +669,14 @@ async function update() {
     );
   }
 
-  if (local_update_list.length) {
-    await install(local_update_list, Path.home().join(".local/bin").string);
+  await install(update_list, install_prefix().string);
+}
+
+function install_prefix() {
+  // if /usr/local is writable, use that
+  if (writable("/usr/local")) {
+    return new Path("/usr/local");
   } else {
-    await install(system_update_list, "/usr/local");
+    return Path.home().join(".local");
   }
 }
