@@ -13,13 +13,6 @@ import { ensureDir, existsSync, walk } from "jsr:@std/fs@^1";
 import { parseArgs } from "jsr:@std/cli@^1";
 import hydrate from "https://deno.land/x/libpkgx@v0.20.3/src/plumbing/hydrate.ts";
 
-const out = new Deno.Command("pkgx", { args: ["--version"] }).outputSync();
-const match = new TextDecoder().decode(out.stdout).match(/pkgx 2.(\d+)/);
-if (!match || parseInt(match[1]) < 4) {
-  console.error("pkgm requires pkgx 2.4.0 or later");
-  Deno.exit(1);
-}
-
 function standardPath() {
   let path = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
@@ -461,6 +454,12 @@ function get_pkgx() {
   for (const path of Deno.env.get("PATH")!.split(":")) {
     const pkgx = join(path, "pkgx");
     if (existsSync(pkgx)) {
+      const out = new Deno.Command(pkgx, { args: ["--version"] }).outputSync();
+      const match = new TextDecoder().decode(out.stdout).match(/pkgx 2.(\d+)/);
+      if (!match || parseInt(match[1]) < 4) {
+        console.error("pkgm requires pkgx 2.4.0 or later");
+        Deno.exit(1);
+      }
       return pkgx;
     }
   }
