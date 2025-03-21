@@ -43,7 +43,8 @@ jobs:
           mv pkgm.ts pkgm
           tar czf pkgm-$V.tgz pkgm
 
-      - uses: pkgxdev/setup@v2
+      - uses: pkgxdev/setup@v3
+
       - name: verify `pkgm --version`
         run: test "$(./pkgm --version)" = "pkgm $V"
 
