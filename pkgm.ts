@@ -189,6 +189,10 @@ async function install(args: string[], basePath: string) {
     }
   }
 
+  if (!Deno.env.get("PATH")?.split(":")?.includes(basePath)) {
+    console.error("%c! warning:", "color:yellow", `${basePath} not in $PATH`);
+  }
+
   return rv;
 }
 
