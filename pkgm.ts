@@ -263,12 +263,14 @@ async function query_pkgx(
   let cmd = needs_sudo_backwards ? "/usr/bin/sudo" : pkgx;
   if (needs_sudo_backwards) {
     if (!Deno.env.get("SUDO_USER")) {
-      if (!Path.root.join(".dockerenv").isFile()) { // if we're running in Docker then screw it, it's fine
-        //TODO if no SUDO_USER then probs we are a root shell, if so set PKGX_DIR and skip hard link step
-        throw new Error("SUDO_USER not set, cannot install as root");
-      } else {
-        cmd = pkgx;
+      if (Deno.uid() == 0) {
+        console.error(
+          "%cwarning",
+          "color:yellow",
+          "installing as root; installing via `sudo` is preferred",
+        );
       }
+      cmd = pkgx;
     } else {
       args.unshift("-u", Deno.env.get("SUDO_USER")!, pkgx);
     }
