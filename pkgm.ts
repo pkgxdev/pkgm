@@ -223,9 +223,12 @@ async function shim(args: string[], basePath: string) {
           await Deno.remove(join(basePath, "bin", name));
         }
 
-        await Deno.writeTextFile(join(basePath, "bin", name), shim, {
+        // without the newline zsh on macOS fails to invoke the interpreter with a bad interpreter error
+        await Deno.writeTextFile(join(basePath, "bin", name), shim + "\n", {
           mode: 0o755,
         });
+
+        console.error(join(basePath, "bin", name));
       }
     }
   }
