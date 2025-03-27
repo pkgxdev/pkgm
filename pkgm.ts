@@ -12,6 +12,7 @@ import { dirname, join } from "jsr:@std/path@^1";
 import { ensureDir, existsSync, walk } from "jsr:@std/fs@^1";
 import { parseArgs } from "jsr:@std/cli@^1";
 import hydrate from "https://deno.land/x/libpkgx@v0.20.3/src/plumbing/hydrate.ts";
+import { basename } from "node:path";
 
 function standardPath() {
   let path = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
@@ -211,7 +212,22 @@ async function shim(args: string[], basePath: string) {
 
   const json = (await query_pkgx(pkgx, args))[0];
 
+  const projects_we_care_about = [];
   for (const pkg of json.pkgs) {
+    const cmds = await hooks.usePantry().project(pkg.pkg.project).provides();
+    const set = new Set(cmds.map((x) => basename(x)));
+    if (!args.some((x) => set.has(x))) continue;
+    const companions = await hooks.usePantry().project(pkg.pkg.project)
+      .companions();
+    projects_we_care_about.push(
+      pkg.pkg.project,
+      ...companions.map((x) => x.project),
+    );
+  }
+
+  for (const pkg of json.pkgs) {
+    if (!projects_we_care_about.includes(pkg.pkg.project)) continue;
+
     for (const bin of ["bin", "sbin"]) {
       const bin_prefix = pkg.path.join(bin);
       if (!bin_prefix.exists()) continue;
