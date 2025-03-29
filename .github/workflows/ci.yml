@@ -76,3 +76,15 @@ jobs:
       # - run: ./pkgm.ts i xpra.org # https://github.com/pkgxdev/pkgm/issues/13
       # - run: ls -la /usr/local/pkgs/xpra.org/v6.2.3/venv/bin
       # - run: xpra --version
+
+      # verifies that libpkgx is creating the pantry at the right place
+      # Refs: https://github.com/pkgxdev/pkgm/issues/59
+      - run: |
+          ./pkgm.ts i semverator
+          if test -d /tmp/foo/pkgx; then
+            test $(uname) = Linux
+          else
+            test $(uname) = Darwin
+          fi
+        env:
+          XDG_DATA_HOME: /tmp/foo

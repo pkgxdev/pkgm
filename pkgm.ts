@@ -7,12 +7,11 @@ import {
   SemVer,
   semver,
   utils,
-} from "https://deno.land/x/libpkgx@v0.20.3/mod.ts";
-import { dirname, join } from "jsr:@std/path@^1";
+} from "https://deno.land/x/libpkgx@v0.21.0/mod.ts";
+import { basename, dirname, join } from "jsr:@std/path@^1";
 import { ensureDir, existsSync, walk } from "jsr:@std/fs@^1";
 import { parseArgs } from "jsr:@std/cli@^1";
-import hydrate from "https://deno.land/x/libpkgx@v0.20.3/src/plumbing/hydrate.ts";
-import { basename } from "node:path";
+const { hydrate } = plumbing;
 
 function standardPath() {
   let path = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
