@@ -8,7 +8,7 @@ import {
   semver,
   utils,
 } from "https://deno.land/x/libpkgx@v0.21.0/mod.ts";
-import { basename, dirname, join } from "jsr:@std/path@^1";
+import { dirname, join } from "jsr:@std/path@^1";
 import { ensureDir, existsSync, walk } from "jsr:@std/fs@^1";
 import { parseArgs } from "jsr:@std/cli@^1";
 const { hydrate } = plumbing;
@@ -211,17 +211,16 @@ async function shim(args: string[], basePath: string) {
 
   const json = (await query_pkgx(pkgx, args))[0];
 
-  const projects_we_care_about = [];
-  for (const pkg of json.pkgs) {
-    const cmds = await hooks.usePantry().project(pkg.pkg.project).provides();
-    const set = new Set(cmds.map((x) => basename(x)));
-    if (!args.some((x) => set.has(x))) continue;
-    const companions = await hooks.usePantry().project(pkg.pkg.project)
-      .companions();
-    projects_we_care_about.push(
-      pkg.pkg.project,
-      ...companions.map((x) => x.project),
-    );
+  const args_pkgs: Record<string, semver.Range> = {};
+  const projects_we_care_about: string[] = [];
+  for (const arg of args) {
+    const pkgs = await hooks.usePantry().find(arg);
+    if (pkgs.length == 0) throw new Error(`no such pkg: ${arg}`);
+    if (pkgs.length > 1) throw new Error(`ambiguous pkg: ${arg}`);
+    args_pkgs[pkgs[0].project] = utils.pkg.parse(arg).constraint;
+    projects_we_care_about.push(pkgs[0].project);
+    const companions = await hooks.usePantry().project(pkgs[0]).companions();
+    projects_we_care_about.push(...companions.map((x) => x.project));
   }
 
   for (const pkg of json.pkgs) {
@@ -239,8 +238,10 @@ async function shim(args: string[], basePath: string) {
           ? "/usr/local/bin/pkgx"
           : "/usr/bin/env -S pkgx";
 
-        const shim =
-          `#!${interpreter} --shebang --quiet +${pkg.pkg.project}=${pkg.pkg.version} -- ${name}`;
+        const range = args_pkgs[pkg.pkg.project];
+        const arg = `${pkg.pkg.project}${`${range}` == "*" ? "" : `${range}`}`;
+
+        const shim = `#!${interpreter} --shebang --quiet +${arg} -- ${name}`;
 
         if (existsSync(join(basePath, "bin", name))) {
           await Deno.remove(join(basePath, "bin", name));

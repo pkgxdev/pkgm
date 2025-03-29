@@ -63,8 +63,9 @@ jobs:
       - run: ~/.local/bin/semverator validate 1.0.0
 
       # tests shims do not shim deps
-      - run: ./pkgm.ts shim node
+      - run: ./pkgm.ts shim node@20
       - run: test ! -d ~/.local/bin/openssl
+      - run: if [[ $(~/.local/bin/node --version) != v20* ]]; then false; fi
 
       - run: ./pkgm.ts i hyperfine@1.18
       - run: ./pkgm.ts outdated | grep hyperfine
