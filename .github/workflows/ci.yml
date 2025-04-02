@@ -89,3 +89,8 @@ jobs:
           fi
         env:
           XDG_DATA_HOME: /tmp/foo
+
+      # https://github.com/pkgxdev/pkgm/issues/62
+      - run: |
+          ./pkgm.ts i spotify_player
+          spotify_player --version
