@@ -136,7 +136,14 @@ async function install(args: string[], basePath: string) {
     `${x.pkg.project}/v${x.pkg.version}`
   );
 
-  const pkgx_dir = Deno.env.get("PKGX_DIR") || `${Deno.env.get("HOME")}/.pkgx`;
+  // get the pkgx_dir this way as it is a) more reliable and b) the only way if
+  // we are running as sudo on linux since it doesn’t give us a good way to get
+  // the home directory of the pre-sudo user
+  const pkgx_dir = (() => {
+    const { path, pkg } = json.pkgs[0]!;
+    const remove = pkg.project + "/v" + pkg.version;
+    return path.string.slice(0, -remove.length - 1);
+  })();
 
   const runtime_env = expand_runtime_env(json, basePath);
 
@@ -178,10 +185,13 @@ async function install(args: string[], basePath: string) {
         for (const [key, value] of Object.entries(env)) {
           sh += `export ${key}="${value}"\n`;
         }
-        sh += `exec "${bin_prefix}/${entry.name}" "$@"\n`;
+
+        sh += "\n";
+        //TODO should be specific with the project
+        sh += dev_stub_text(to_stub, bin_prefix, entry.name);
 
         await Deno.remove(to_stub); //FIXME inefficient to symlink for no reason
-        await Deno.writeTextFile(to_stub, sh);
+        await Deno.writeTextFile(to_stub, sh.trim() + "\n");
         await Deno.chmod(to_stub, 0o755);
 
         rv.push(to_stub);
@@ -282,6 +292,7 @@ async function query_pkgx(
   set("PKGX_DIR");
   set("PKGX_PANTRY_DIR");
   set("PKGX_DIST_URL");
+  set("XDG_DATA_HOME");
 
   const needs_sudo_backwards = install_prefix().string == "/usr/local";
   let cmd = needs_sudo_backwards ? "/usr/bin/sudo" : pkgx;
@@ -316,6 +327,7 @@ async function query_pkgx(
 
   const out = await proc.output();
   const json = JSON.parse(new TextDecoder().decode(out.stdout));
+
   const pkgs =
     (json.pkgs as { path: string; project: string; version: string }[]).map(
       (x) => {
@@ -725,4 +737,39 @@ function install_prefix() {
   } else {
     return Path.home().join(".local");
   }
+}
+
+function dev_stub_text(selfpath: string, bin_prefix: string, name: string) {
+  if (selfpath.startsWith("/usr/local") && selfpath != "/usr/local/bin/dev") {
+    return `
+dev_check() {
+  [ -x /usr/local/bin/dev ] || return 1
+  local d="$PWD"
+  until [ "$d" = / ]; do
+    if [ -f "${datadir()}/pkgx/dev/$d/dev.pkgx.activated" ]; then
+      echo $d
+      return 0
+    fi
+    d="$(dirname "$d")"
+  done
+  return 1
+}
+
+if d="$(dev_check)"; then
+  eval "$(/usr/local/bin/dev "$d" 2>/dev/null)"
+  [ "$(command -v ${name} 2>/dev/null)" != "${selfpath}" ] && exec ${name} "$@"
+fi
+
+exec ${bin_prefix}/${name} "$@"
+`.trim();
+  } else {
+    return `exec ${bin_prefix}/${name} "$@"`;
+  }
+}
+
+function datadir() {
+  const default_data_home = Deno.build.os == "darwin"
+    ? "/Library/Application Support"
+    : "/.local/share";
+  return `\${XDG_DATA_HOME:-$HOME${default_data_home}}`;
 }
