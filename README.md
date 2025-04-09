@@ -7,33 +7,26 @@ Install `pkgx` packages to `/usr/local`.
 > `pkgm` is new software. Please report any issues you encounter and try it out
 > in parallel with your current package manager.
 
-> [!WARNING]
->
-> `pkgm` is new software. Some features listed here are not yet implemented. You
-> can help! Or we’ll get to it soon.
-
 ## Usage
 
 ```sh
-$ pkgm install git
-# ^^ installs latest git to ~/.local. ie. you get ~/.local/bin/git
+$ pkgm install node
+# ^^ installs latest node to ~/.local. ie. you get ~/.local/bin/node
 
-$ pkgm install git@2.41
-# ^^ installs git^2.41 or switches out the installed git to 2.41
+$ pkgm install node@20.1
+# ^^ installs node^20.1 or switches out the installed node to 20.1
 
-$ pkgm uninstall git
+$ pkgm uninstall node
 
-$ sudo pkgm install git
-# ^^ installs git to /usr/local. ie. you get /usr/local/bin/git
+$ sudo pkgm install node
+# ^^ installs node to /usr/local. ie. you get /usr/local/bin/node
 
-$ pkgm shim git
-# ^^ creates a shim for git in ~/.local/bin
-# these shims mimic the pkgx v1 lazy-loading shims, and are desirable for
-# certain types of self-healing and dev-setup containers, among other things
-# requires pkgx^2.4.0 for --shebang option
+$ pkgm shim node
+# ^^ creates a shim for node at ~/.local/bin/node
+# see the docs below for details about shims
 
 $ pkgm list
-# ^^ lists what is installed
+# ^^ lists what’s installed
 
 $ pkgm outdated
 # ^^ lists outdated installations
@@ -43,9 +36,6 @@ $ pkgm update
 
 $ sudo pkgm update
 # ^^ updates /usr/local packages to latest versions
-
-$ pkgm pin git
-# ^^ prevents the installed git from being updated
 ```
 
 > [!TIP]
@@ -54,6 +44,25 @@ $ pkgm pin git
 > - `pkgm rm` is an alias for `pkgm uninstall`
 > - `pkgm ls` is an alias for `pkgm list`
 > - `pkgm up` is an alias for `pkgm update`
+
+> [!WARNING]
+>
+> You should probably `sudo pkgm install` rather than install to `~/.local`.
+> This is because many other tools will not look in `~/.local` for packages
+> _even_ if it’s in `PATH`. Having said this—by all means—see how it goes!
+
+> ### Shims
+>
+> Shims are files with a single line, eg `#!/usr/bin/env -S pkgx -q! node@22`.
+>
+> Thus using the shell to reinvoke the file via `pkgx`. You get all the benefits
+> of an installed package without actually it actually being installed until it
+> is needed. Traits desirable for certain types of self-healing, devops
+> containers and plenty more one-off or ephemeral tasks.
+>
+> Shims are pretty great—but have caveats. Some software might be surprised that
+> a package is not fully “installed” and lead to errors. In practice we have
+> seen issues only rarely and for more complex package combinations.
 
 ## Installation
 
@@ -78,4 +87,6 @@ brew rm pkgm || sudo rm /usr/local/bin/pkgm
 - Blazingly fast
 - Install specific versions of any pkg
 - You install by executable name—thus you _don’t have to do a search first_
-- Installed packages are installed as `root`
+- Installed packages can be installed as `root`
+- `dev`-aware installations
+- Self-healing shims

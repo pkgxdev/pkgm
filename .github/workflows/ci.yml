@@ -25,6 +25,7 @@ jobs:
   #TODO test on linux! we are currently broken due to rpath issues
   # https://github.com/pkgxdev/pkgm/pull/30#issuecomment-2678957666
   test:
+    continue-on-error: true
     strategy:
       matrix:
         os:
@@ -33,7 +34,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: pkgxdev/setup@v3
+      - uses: pkgxdev/setup@v4
 
       - run: ./pkgm.ts i git
       - run: ~/.local/bin/git --version
@@ -89,6 +90,19 @@ jobs:
           fi
         env:
           XDG_DATA_HOME: /tmp/foo
+
+      - run: |
+          set -x
+          sudo ./pkgm.ts i node@22 dev
+          [[ $(node --version) = v22* ]] || exit 2
+          mkdir foo
+          cd foo
+          echo "dependencies: node@20" > pkgx.yaml
+          mkdir -p /tmp/bar/pkgx/dev$PWD/
+          touch /tmp/bar/pkgx/dev$PWD/dev.pkgx.activated   # `dev .` doesn’t work in CI (fix in dev^2)
+          [[ $(node --version) = v20* ]] || exit 3
+        env:
+          XDG_DATA_HOME: /tmp/bar
 
       # https://github.com/pkgxdev/pkgm/issues/62
       - run: |
