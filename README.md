@@ -55,14 +55,15 @@ $ sudo pkgm update
 >
 > Shims are files with a single line, eg `#!/usr/bin/env -S pkgx -q! node@22`.
 >
-> Thus using the shell to reinvoke the file via `pkgx`. You get all the benefits
-> of an installed package without actually it actually being installed until it
-> is needed. Traits desirable for certain types of self-healing, devops
-> containers and plenty more one-off or ephemeral tasks.
+> Thus using the shell to invoke the program via `pkgx`. You get all the
+> benefits of an installed package—but only installed on-demand. Useful for
+> self-healing setups, devops, containers and plenty more one-off or ephemeral
+> tasks.
 >
 > Shims are pretty great—but have caveats. Some software might be surprised that
-> a package is not fully “installed” and lead to errors. In practice we have
-> seen issues only rarely and for more complex package combinations.
+> a package is not fully “installed” which can lead to unexpected errors. In
+> practice we have seen issues only rarely and for more complex package
+> combinations.
 
 ## Installation
 
@@ -89,4 +90,4 @@ brew rm pkgm || sudo rm /usr/local/bin/pkgm
 - You install by executable name—thus you _don’t have to do a search first_
 - Installed packages can be installed as `root`
 - `dev`-aware installations
-- Self-healing shims
+- Optional self-healing shims
