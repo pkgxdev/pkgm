@@ -429,8 +429,9 @@ async function create_v_symlinks(prefix: string) {
   for await (const { name, isDirectory, isSymlink } of Deno.readDir(shelf)) {
     if (isSymlink) continue;
     if (!isDirectory) continue;
-    if (!name.startsWith("v")) continue;
     if (name == "var") continue;
+    if (!name.startsWith("v")) continue;
+    if (/^v\d+$/.test(name)) continue; // pcre.org/v2
     const version = semver.parse(name);
     if (version) {
       versions.push(version);
@@ -494,7 +495,7 @@ function expand_runtime_env(
 }
 
 function symlink_with_overwrite(src: string, dst: string) {
-  if (existsSync(dst)) {
+  if (existsSync(dst) && Deno.lstatSync(dst).isSymlink) {
     Deno.removeSync(dst);
   }
   Deno.symlinkSync(src, dst);
@@ -505,9 +506,9 @@ function get_pkgx() {
     const pkgx = join(path, "pkgx");
     if (existsSync(pkgx)) {
       const out = new Deno.Command(pkgx, { args: ["--version"] }).outputSync();
-      const match = new TextDecoder().decode(out.stdout).match(/pkgx 2.(\d+)/);
-      if (!match || parseInt(match[1]) < 4) {
-        console.error("pkgm requires pkgx 2.4.0 or later");
+      const stdout = new TextDecoder().decode(out.stdout);
+      const match = stdout.match(/^pkgx (\d+.\d+)/);
+      if (!match || parseFloat(match[1]) < 2.4) {
         Deno.exit(1);
       }
       return pkgx;
