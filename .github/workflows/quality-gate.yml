@@ -1,0 +1,50 @@
+name: quality-gate
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  changed-file-quality-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: detect changed source/test files
+        id: diff
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          CHANGED="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+
+          SOURCE="$(printf '%s\n' "$CHANGED" | grep -E '\.ts$' | grep -Ev '\.test\.ts$|^\.github/' || true)"
+          TESTS="$(printf '%s\n' "$CHANGED" | grep -E '\.test\.ts$' || true)"
+
+          if [ -n "$SOURCE" ]; then
+            echo "source_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "source_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ -n "$SOURCE" ] && [ -z "$TESTS" ]; then
+            echo "::error::Source files changed without test updates. Add or update *.test.ts files."
+            exit 1
+          fi
+
+      - uses: denolib/setup-deno@v2
+        if: steps.diff.outputs.source_changed == 'true'
+        with:
+          deno-version: v2.x
+
+      - run: deno check ./pkgm.ts
+        if: steps.diff.outputs.source_changed == 'true'
+
+      - run: deno task test
+        if: steps.diff.outputs.source_changed == 'true'
