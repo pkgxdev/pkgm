@@ -21,6 +21,7 @@ jobs:
       - run: deno fmt --check .
       - run: deno lint .
       - run: deno check ./pkgm.ts
+      - run: deno task test
 
   #TODO test on linux! we are currently broken due to rpath issues
   # https://github.com/pkgxdev/pkgm/pull/30#issuecomment-2678957666

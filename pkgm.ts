@@ -11,6 +11,7 @@ import {
 import { dirname, join } from "jsr:@std/path@^1";
 import { ensureDir, existsSync, walk } from "jsr:@std/fs@^1";
 import { parseArgs } from "jsr:@std/cli@^1";
+import { datadir, devStubText } from "./dev-stub.ts";
 const { hydrate } = plumbing;
 
 function standardPath() {
@@ -188,7 +189,7 @@ async function install(args: string[], basePath: string) {
 
         sh += "\n";
         //TODO should be specific with the project
-        sh += dev_stub_text(to_stub, bin_prefix, entry.name);
+        sh += devStubText(to_stub, bin_prefix, entry.name);
 
         await Deno.remove(to_stub); //FIXME inefficient to symlink for no reason
         await Deno.writeTextFile(to_stub, sh.trim() + "\n");
@@ -749,39 +750,4 @@ function install_prefix() {
   } else {
     return Path.home().join(".local");
   }
-}
-
-function dev_stub_text(selfpath: string, bin_prefix: string, name: string) {
-  if (selfpath.startsWith("/usr/local") && selfpath != "/usr/local/bin/dev") {
-    return `
-dev_check() {
-  [ -x /usr/local/bin/dev ] || return 1
-  local d="$PWD"
-  until [ "$d" = / ]; do
-    if [ -f "${datadir()}/pkgx/dev/$d/dev.pkgx.activated" ]; then
-      echo $d
-      return 0
-    fi
-    d="$(dirname "$d")"
-  done
-  return 1
-}
-
-if d="$(dev_check)"; then
-  eval "$(/usr/local/bin/dev "$d" 2>/dev/null)"
-  [ "$(command -v ${name} 2>/dev/null)" != "${selfpath}" ] && exec ${name} "$@"
-fi
-
-exec ${bin_prefix}/${name} "$@"
-`.trim();
-  } else {
-    return `exec ${bin_prefix}/${name} "$@"`;
-  }
-}
-
-function datadir() {
-  const default_data_home = Deno.build.os == "darwin"
-    ? "/Library/Application Support"
-    : "/.local/share";
-  return `\${XDG_DATA_HOME:-$HOME${default_data_home}}`;
 }

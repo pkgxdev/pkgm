@@ -1,4 +1,7 @@
 {
+  "tasks": {
+    "test": "deno test ./dev-stub.test.ts"
+  },
   "fmt": {
     "exclude": ["tea.yaml"] // not germane
   },
