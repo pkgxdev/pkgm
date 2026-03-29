@@ -518,8 +518,8 @@ function get_pkgx() {
     if (existsSync(pkgx)) {
       const out = new Deno.Command(pkgx, { args: ["--version"] }).outputSync();
       const stdout = new TextDecoder().decode(out.stdout);
-      const match = stdout.match(/^pkgx (\d+.\d+)/);
-      if (!match || parseFloat(match[1]) < 2.4) {
+      const match = stdout.match(/^pkgx (\d+\.\d+\.\d+)/);
+      if (!match || new SemVer(match[1]).lt(new SemVer("2.4.0"))) {
         Deno.exit(1);
       }
       return pkgx;
