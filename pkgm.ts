@@ -24,7 +24,9 @@ function standardPath() {
       break;
     case "linux":
       homebrewPrefix = `/home/linuxbrew/.linuxbrew:${
-        Deno.env.get("HOME")
+        Deno.env.get(
+          "HOME",
+        )
       }/.linuxbrew`;
       break;
   }
@@ -87,7 +89,7 @@ if (parsedArgs.help || parsedArgs._[0] == "help") {
       {
         let all_success = true;
         for (const arg of args) {
-          if (!await uninstall(arg)) {
+          if (!(await uninstall(arg))) {
             all_success = false;
           }
         }
@@ -132,8 +134,8 @@ async function install(args: string[], basePath: string) {
   const pkgx = get_pkgx();
 
   const [json] = await query_pkgx(pkgx, args);
-  const pkg_prefixes = json.pkgs.map((x) =>
-    `${x.pkg.project}/v${x.pkg.version}`
+  const pkg_prefixes = json.pkgs.map(
+    (x) => `${x.pkg.project}/v${x.pkg.version}`,
   );
 
   // get the pkgx_dir this way as it is a) more reliable and b) the only way if
@@ -200,9 +202,10 @@ async function install(args: string[], basePath: string) {
   }
 
   if (
-    !Deno.env.get("PATH")?.split(":")?.includes(
-      new Path(basePath).join("bin").string,
-    )
+    !Deno.env
+      .get("PATH")
+      ?.split(":")
+      ?.includes(new Path(basePath).join("bin").string)
   ) {
     console.error(
       "%c! warning:",
@@ -282,7 +285,7 @@ async function query_pkgx(
   args = args.map((x) => `+${x}`);
 
   const env: Record<string, string> = {
-    "PATH": standardPath(),
+    PATH: standardPath(),
   };
   const set = (key: string) => {
     const x = Deno.env.get(key);
@@ -316,8 +319,7 @@ async function query_pkgx(
     stdout: "piped",
     env,
     clearEnv: true,
-  })
-    .spawn();
+  }).spawn();
 
   const status = await proc.status;
 
@@ -328,22 +330,24 @@ async function query_pkgx(
   const out = await proc.output();
   const json = JSON.parse(new TextDecoder().decode(out.stdout));
 
-  const pkgs =
-    (json.pkgs as { path: string; project: string; version: string }[]).map(
-      (x) => {
-        return {
-          path: new Path(x.path),
-          pkg: { project: x.project, version: new SemVer(x.version) },
-        };
-      },
-    );
+  const pkgs = (
+    json.pkgs as { path: string; project: string; version: string }[]
+  ).map((x) => {
+    return {
+      path: new Path(x.path),
+      pkg: { project: x.project, version: new SemVer(x.version) },
+    };
+  });
   const pkg = pkgs.find((x) => `+${x.pkg.project}` == args[0])!;
-  return [{
-    pkg,
-    pkgs,
-    env: json.env,
-    runtime_env: json.runtime_env,
-  }, env];
+  return [
+    {
+      pkg,
+      pkgs,
+      env: json.env,
+      runtime_env: json.runtime_env,
+    },
+    env,
+  ];
 }
 
 async function mirror_directory(dst: string, src: string, prefix: string) {
@@ -465,10 +469,7 @@ async function create_v_symlinks(prefix: string) {
   }
 }
 
-function expand_runtime_env(
-  json: JsonResponse,
-  basePath: string,
-) {
+function expand_runtime_env(json: JsonResponse, basePath: string) {
   const { runtime_env, pkgs } = json;
 
   //FIXME this combines all runtime env which is strictly overkill
@@ -498,7 +499,11 @@ function expand_runtime_env(
 
   // DUMB but easiest way to fix a bug
   const rv2: Record<string, Record<string, string>> = {};
-  for (const { pkg: { project } } of json.pkgs) {
+  for (
+    const {
+      pkg: { project },
+    } of json.pkgs
+  ) {
     rv2[project] = rv;
   }
 
@@ -530,7 +535,10 @@ function get_pkgx() {
 
 async function* ls() {
   for (
-    const path of [new Path("/usr/local/pkgs"), Path.home().join(".local/pkgs")]
+    const path of [
+      new Path("/usr/local/pkgs"),
+      Path.home().join(".local/pkgs"),
+    ]
   ) {
     if (!path.isDirectory()) continue;
     const dirs = [path];
@@ -554,7 +562,7 @@ async function uninstall(arg: string) {
     found = (await hooks.usePantry().find(arg))?.[0];
   } catch {
     console.error(
-      "%ci pantry not found, trying to find package another way",
+      "%c pantry not found, trying to find package another way",
       "color:blue",
     );
   }
@@ -671,8 +679,8 @@ async function outdated() {
   for (const { path, pkg } of pkgs) {
     const versions = await hooks.useInventory().get(pkg);
     // console.log(pkg, graph[pkg.project]);
-    const constrained_versions = versions.filter((x) =>
-      graph[pkg.project].satisfies(x) && x.gt(pkg.version)
+    const constrained_versions = versions.filter(
+      (x) => graph[pkg.project].satisfies(x) && x.gt(pkg.version),
     );
     if (constrained_versions.length) {
       console.log(
@@ -726,8 +734,8 @@ async function update() {
 
   for (const { pkg } of pkgs) {
     const versions = await hooks.useInventory().get(pkg);
-    const constrained_versions = versions.filter((x) =>
-      graph[pkg.project].satisfies(x) && x.gt(pkg.version)
+    const constrained_versions = versions.filter(
+      (x) => graph[pkg.project].satisfies(x) && x.gt(pkg.version),
     );
 
     if (constrained_versions.length) {
