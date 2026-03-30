@@ -549,8 +549,15 @@ async function* ls() {
 }
 
 async function uninstall(arg: string) {
-  let found: { project: string } | undefined =
-    (await hooks.usePantry().find(arg))?.[0];
+  let found: { project: string } | undefined;
+  try {
+    found = (await hooks.usePantry().find(arg))?.[0];
+  } catch {
+    console.error(
+      "%ci pantry not found, trying to find package another way",
+      "color:blue",
+    );
+  }
   if (!found) {
     found = await plumbing.which(arg);
   }
