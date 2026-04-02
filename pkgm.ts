@@ -511,10 +511,21 @@ function expand_runtime_env(json: JsonResponse, basePath: string) {
 }
 
 function symlink_with_overwrite(src: string, dst: string) {
-  if (existsSync(dst) && Deno.lstatSync(dst).isSymlink) {
+  if (isSymlink(dst)) {
     Deno.removeSync(dst);
   }
   Deno.symlinkSync(src, dst);
+}
+
+function isSymlink(path: string): boolean {
+  try {
+    return Deno.lstatSync(path).isSymlink;
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) {
+      return false;
+    }
+    throw err;
+  }
 }
 
 function get_pkgx() {
