@@ -812,14 +812,20 @@ function pkgx_reachable_as(current: string, user: string): string | undefined {
     const root = join(home, ".pkgx/pkgx.sh");
     if (existsSync(root)) {
       let best: { v: SemVer; path: string } | undefined;
-      for (const entry of Deno.readDirSync(root)) {
-        if (!entry.isDirectory || !entry.name.startsWith("v")) continue;
-        try {
-          const v = new SemVer(entry.name.slice(1));
-          const path = join(root, entry.name, "bin/pkgx");
-          if (!existsSync(path)) continue;
-          if (!best || v.gt(best.v)) best = { v, path };
-        } catch { /* skip malformed version dir */ }
+      try {
+        if (Deno.statSync(root).isDirectory) {
+          for (const entry of Deno.readDirSync(root)) {
+            if (!entry.isDirectory || !entry.name.startsWith("v")) continue;
+            try {
+              const v = new SemVer(entry.name.slice(1));
+              const path = join(root, entry.name, "bin/pkgx");
+              if (!existsSync(path)) continue;
+              if (!best || v.gt(best.v)) best = { v, path };
+            } catch { /* skip malformed version dir */ }
+          }
+        }
+      } catch {
+        // Ignore unreadable/non-directory pkgx.sh roots and fall back to other locations.
       }
       if (best) return best.path;
     }
