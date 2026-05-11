@@ -787,8 +787,12 @@ function install_prefix() {
 function user_home(user: string): string | undefined {
   // getent is the portable lookup on Linux; on macOS getent is absent but the
   // /root/.pkgx scenario this guards against doesn't arise there in practice.
+  const getent = existsSync("/usr/bin/getent")
+    ? "/usr/bin/getent"
+    : "/bin/getent";
+
   try {
-    const out = new Deno.Command("getent", {
+    const out = new Deno.Command(getent, {
       args: ["passwd", user],
     }).outputSync();
     if (!out.success) return undefined;
