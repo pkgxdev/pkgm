@@ -313,7 +313,7 @@ async function query_pkgx(
       const reachable = pkgx_reachable_as(pkgx, sudoUser);
       if (reachable) {
         cmd = "/usr/bin/sudo";
-        cmd_args = ["-u", sudoUser, reachable, ...args];
+        cmd_args = ["-u", sudoUser, "--", reachable, ...args];
         // Override HOME, or pkgx will cache back under /root/ where sudoUser
         // can't reach it on the next invocation.
         const home = user_home(sudoUser);
