@@ -784,23 +784,66 @@ function install_prefix() {
   }
 }
 
-function user_home(user: string): string | undefined {
-  // getent is the portable lookup on Linux; on macOS getent is absent but the
-  // /root/.pkgx scenario this guards against doesn't arise there in practice.
-  const getent = existsSync("/usr/bin/getent")
-    ? "/usr/bin/getent"
-    : "/bin/getent";
+function user_home_from_passwd(user: string): string | undefined {
+  try {
+    const passwd = Deno.readTextFileSync("/etc/passwd");
+    for (const line of passwd.split("\n")) {
+      if (!line || line.startsWith("#")) continue;
+      const fields = line.split(":");
+      if (fields[0] === user) return fields[5] || undefined;
+    }
+  } catch {
+    // Ignore unreadable or absent passwd database and fall back to other lookups.
+  }
+
+  return undefined;
+}
+
+function user_home_from_dscl(user: string): string | undefined {
+  if (!existsSync("/usr/bin/dscl")) return undefined;
 
   try {
-    const out = new Deno.Command(getent, {
-      args: ["passwd", user],
+    const out = new Deno.Command("/usr/bin/dscl", {
+      args: [".", "-read", `/Users/${user}`, "NFSHomeDirectory"],
     }).outputSync();
     if (!out.success) return undefined;
-    const fields = new TextDecoder().decode(out.stdout).trim().split(":");
-    return fields[5] || undefined;
+
+    const line = new TextDecoder().decode(out.stdout).trim();
+    const prefix = "NFSHomeDirectory:";
+    if (!line.startsWith(prefix)) return undefined;
+
+    const home = line.slice(prefix.length).trim();
+    return home || undefined;
   } catch {
     return undefined;
   }
+}
+
+function user_home(user: string): string | undefined {
+  // Prefer getent where available, but fall back to passwd parsing and macOS
+  // dscl so HOME can still be resolved when dropping privileges on systems
+  // without getent.
+  const getent = existsSync("/usr/bin/getent")
+    ? "/usr/bin/getent"
+    : existsSync("/bin/getent")
+    ? "/bin/getent"
+    : undefined;
+
+  if (getent) {
+    try {
+      const out = new Deno.Command(getent, {
+        args: ["passwd", user],
+      }).outputSync();
+      if (out.success) {
+        const fields = new TextDecoder().decode(out.stdout).trim().split(":");
+        if (fields[5]) return fields[5];
+      }
+    } catch {
+      // Ignore getent lookup failures and try portable fallbacks below.
+    }
+  }
+
+  return user_home_from_passwd(user) ?? user_home_from_dscl(user);
 }
 
 function pkgx_reachable_as(current: string, user: string): string | undefined {
