@@ -889,8 +889,7 @@ function reachable_as(p: string, user: string): boolean {
   if (p === "/root" || p.startsWith("/root/")) return false;
   if (p === "/var/root" || p.startsWith("/var/root/")) return false;
 
-  const m = p.match(/^\/(home|Users)\/([^/]+)(?:\/|$)/);
-  if (m) return false;
+  if (p.match(/^\/(home|Users)\/([^/]+)(?:\/|$)/)) return false;
 
   return true;
 }
