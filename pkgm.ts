@@ -883,9 +883,15 @@ function reachable_as(p: string, user: string): boolean {
   // Conservative heuristic: private home dirs are typically mode 700, so a
   // path under another user's home is unreachable. System paths and the
   // user's own home are assumed reachable.
-  if (p.startsWith("/root/")) return user === "root";
-  const m = p.match(/^\/home\/([^/]+)\//);
-  if (m) return m[1] === user;
+  const home = user_home(user);
+  if (home && (p === home || p.startsWith(`${home}/`))) return true;
+
+  if (p === "/root" || p.startsWith("/root/")) return false;
+  if (p === "/var/root" || p.startsWith("/var/root/")) return false;
+
+  const m = p.match(/^\/(home|Users)\/([^/]+)(?:\/|$)/);
+  if (m) return false;
+
   return true;
 }
 
