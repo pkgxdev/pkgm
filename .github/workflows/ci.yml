@@ -112,11 +112,17 @@ jobs:
   # Validates `sudo pkgm install` behaviour fixed in 2b33f20:
   #  - privilege drop so pkgx cache stays owned by $SUDO_USER, not root
   #  - HOME override so the cache lands under the invoking user's tree
-  #  - fallback to running pkgx as root when it lives under /root/.pkgx
+  #  - fallback to running pkgx as root when it lives under root's home
   #    and is therefore unreachable to $SUDO_USER (pkgxdev/pkgm#68)
-  # Linux-only: the /root/.pkgx scenario doesn't arise on macOS in practice.
+  # The root-home path differs by OS (/root on Linux, /var/root on macOS);
+  # we resolve it dynamically via `eval echo ~root` rather than hard-coding.
   sudo-install:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: pkgxdev/setup@v4
@@ -124,50 +130,70 @@ jobs:
       - name: sudo install drops privileges and overrides HOME
         run: |
           set -eux
-          # marker to scope ownership checks to files created by this install
+          # marker to scope checks to entries created by this install
           touch /tmp/pkgm-sudo-marker
+          # Plain `sudo` (no -H). This is what a typical user types. On
+          # macOS, sudoers keeps HOME in env_keep so the shebang's outer
+          # pkgx runs as root inside $SUDO_USER's tree and pollutes
+          # $HOME/.pkgx with root-owned dirs. pkgm.ts's
+          # reclaim_pkgx_cache_for() chowns those back to $SUDO_USER
+          # before dropping privileges so the inner pkgx can write.
           sudo ./pkgm.ts i hyperfine
           test -x /usr/local/bin/hyperfine
-          # HOME override: pkgx must not have created anything under /root/.pkgx
-          # during this install. We scope the check to paths newer than the
-          # marker so a pre-existing /root/.pkgx from the runner image or
-          # setup action does not cause a false failure.
-          created_under_root=$(sudo find /root/.pkgx -newer /tmp/pkgm-sudo-marker -print 2>/dev/null || true)
-          if [ -n "$created_under_root" ]; then
-            echo "::error::pkgx cached under /root/.pkgx — HOME override failed"
-            echo "$created_under_root"
+
+          # HOME override + privilege drop are validated via the pkg cache
+          # under $HOME/.pkgx. We deliberately do NOT assert that
+          # /root/.pkgx is empty: the shebang's `pkgx --quiet deno^2.1 run …`
+          # runs as root before any pkgm.ts code executes, and that outer
+          # pkgx caches under $HOME/.pkgx which resolves to /root/.pkgx
+          # under sudo. That cache is unavoidable and unrelated to whether
+          # pkgm's *inner* pkgx call dropped privileges.
+          #
+          # We check for newly created entries (directories specifically),
+          # not files: tar -x preserves the archive's original mtimes on
+          # extracted files, so file mtimes are typically *older* than the
+          # marker. Directories are created fresh by `mkdir` during
+          # extraction and reliably have a current mtime.
+
+          new_dirs=$(sudo find "$HOME/.pkgx" -newer /tmp/pkgm-sudo-marker -type d -print 2>/dev/null | head -1 || true)
+          if [ -z "$new_dirs" ]; then
+            echo "::error::no new directories under \$HOME/.pkgx — inner pkgx did not cache to invoking user's tree"
             exit 1
           fi
-          # Privilege drop: nothing newly created under ~/.pkgx should be
-          # owned by root. Any root-owned file here means pkgx ran as root
-          # despite SUDO_USER being set.
+
           owned_by_root=$(sudo find "$HOME/.pkgx" -newer /tmp/pkgm-sudo-marker -user root -print 2>/dev/null || true)
           if [ -n "$owned_by_root" ]; then
-            echo "::error::pkgx cache files created as root under \$HOME/.pkgx:"
+            echo "::error::pkgx cache entries created as root under \$HOME/.pkgx — privilege drop failed:"
             echo "$owned_by_root"
             exit 1
           fi
 
       - name: sudo install falls back when pkgx is unreachable as $SUDO_USER
         # Must be last — this step strips pkgx from every location the
-        # runner user can reach, leaving only /root/.pkgx, which the
-        # subsequent shebang resolution still needs to walk through sudo.
+        # runner user can reach, leaving only root's private pkgx, which
+        # the subsequent shebang resolution still needs to walk through sudo.
         run: |
           set -eux
-          # Stage pkgx exclusively under /root so that reachable_as() returns
-          # false for the runner user and no alternative is found.
+          # Resolve root's home portably: /root on Linux, /var/root on macOS.
+          # Hard-coding /root would fail on macOS because the system volume
+          # is read-only and `sudo mkdir /root` can't create a new top-level
+          # dir without /etc/synthetic.conf.
+          root_home=$(eval echo ~root)
+
+          # Stage pkgx exclusively under root's home so that reachable_as()
+          # returns false for the runner user and no alternative is found.
           pkgx_src=$(command -v pkgx)
-          sudo mkdir -p /root/.pkgx/bin
-          sudo cp "$pkgx_src" /root/.pkgx/bin/pkgx
+          sudo mkdir -p "$root_home/.pkgx/bin"
+          sudo cp "$pkgx_src" "$root_home/.pkgx/bin/pkgx"
           # Wipe every alternative the resolver looks for:
           #   ~/.pkgx/pkgx.sh/v*/bin/pkgx, ~/.local/bin/pkgx, /usr/local/bin/pkgx
           rm -rf "$HOME/.pkgx"
           sudo rm -f /usr/local/bin/pkgx "$HOME/.local/bin/pkgx"
-          # Invoke pkgm.ts with the /root pkgx on PATH. `sudo env PATH=...`
+          # Invoke pkgm.ts with the staged pkgx on PATH. `sudo env PATH=...`
           # is the canonical way around the default secure_path policy in
-          # Ubuntu's sudoers.
+          # Ubuntu's sudoers; macOS sudo respects the explicit env too.
           set +e
-          out=$(sudo env PATH="/root/.pkgx/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" ./pkgm.ts i gum 2>&1)
+          out=$(sudo env PATH="$root_home/.pkgx/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" ./pkgm.ts i gum 2>&1)
           rc=$?
           set -e
           echo "$out"

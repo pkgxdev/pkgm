@@ -13,6 +13,13 @@ import { ensureDir, existsSync, walk } from "jsr:@std/fs@^1";
 import { parseArgs } from "jsr:@std/cli@^1";
 const { hydrate } = plumbing;
 
+// Module-scope SemVer literal: must be defined before any function that
+// reads it can be called from top-level code below. `const` declarations
+// are hoisted in name only (TDZ), so placing this further down the file
+// triggered "Cannot access 'PKGX_MIN_VERSION' before initialization" once
+// install()/get_pkgx() ran at module-init time.
+const PKGX_MIN_VERSION = new SemVer("2.4.0");
+
 function standardPath() {
   let path = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
@@ -297,25 +304,56 @@ async function query_pkgx(
   set("PKGX_DIST_URL");
   set("XDG_DATA_HOME");
 
-  const needs_sudo_backwards = install_prefix().string == "/usr/local";
-  let cmd = needs_sudo_backwards ? "/usr/bin/sudo" : pkgx;
-  if (needs_sudo_backwards) {
-    if (!Deno.env.get("SUDO_USER")) {
-      if (Deno.uid() == 0) {
+  const isRoot = Deno.uid() == 0;
+  const sudoUser = Deno.env.get("SUDO_USER");
+  const prefix = install_prefix().string;
+  const isSystemPrefix = prefix == "/usr/local";
+
+  let cmd = pkgx;
+  let cmd_args = args;
+
+  if (isSystemPrefix) {
+    if (isRoot && sudoUser) {
+      const sudo_user_home = user_home(sudoUser);
+
+      // If sudo preserved HOME (typical macOS — sudoers keeps HOME in
+      // env_keep by default; most Linux distros reset it via env_reset),
+      // the shebang's outer `pkgx --quiet deno^2.1 run …` ran as root
+      // with HOME pointing at SUDO_USER's tree and its self-cache left
+      // root-owned dirs under $SUDO_USER/.pkgx. The privilege-dropped
+      // inner pkgx below would then EACCES on those dirs and abort the
+      // install. Reclaim ownership for $SUDO_USER so the install can
+      // proceed without forcing the user to remember `sudo -H`.
+      if (sudo_user_home && Deno.env.get("HOME") === sudo_user_home) {
+        reclaim_pkgx_cache_for(sudo_user_home, sudoUser);
+      }
+
+      // Drop privileges so pkgx writes its cache as the invoking user, not root.
+      // But only if pkgx is reachable from sudoUser — otherwise the inner sudo
+      // aborts with "unable to execute …: Permission denied" (pkgxdev/pkgm#68).
+      const reachable = pkgx_reachable_as(pkgx, sudoUser);
+      if (reachable) {
+        cmd = "/usr/bin/sudo";
+        cmd_args = ["-u", sudoUser, "--", reachable, ...args];
+        // Override HOME, or pkgx will cache back under /root/ where sudoUser
+        // can't reach it on the next invocation.
+        if (sudo_user_home) env.HOME = sudo_user_home;
+      } else if (Deno.env.get("PKGM_DEBUG")) {
         console.error(
-          "%cwarning",
-          "color:yellow",
-          "installing as root; installing via `sudo` is preferred",
+          `pkgm: \`pkgx\` at ${pkgx} is not reachable as ${sudoUser}; running it as root`,
         );
       }
-      cmd = pkgx;
-    } else {
-      args.unshift("-u", Deno.env.get("SUDO_USER")!, pkgx);
+    } else if (isRoot) {
+      console.error(
+        "%cwarning",
+        "color:yellow",
+        "installing as root; installing via `sudo` is preferred",
+      );
     }
   }
 
   const proc = new Deno.Command(cmd, {
-    args: [...args, "--json=v1"],
+    args: [...cmd_args, "--json=v1"],
     stdout: "piped",
     env,
     clearEnv: true,
@@ -517,18 +555,26 @@ function symlink_with_overwrite(src: string, dst: string) {
   Deno.symlinkSync(src, dst);
 }
 
+function pkgx_meets_minimum(path: string): boolean {
+  try {
+    const out = new Deno.Command(path, { args: ["--version"] }).outputSync();
+    if (!out.success) return false;
+    const match = new TextDecoder().decode(out.stdout).match(
+      /^pkgx (\d+\.\d+\.\d+)/,
+    );
+    if (!match) return false;
+    return new SemVer(match[1]).gte(PKGX_MIN_VERSION);
+  } catch {
+    return false;
+  }
+}
+
 function get_pkgx() {
   for (const path of Deno.env.get("PATH")!.split(":")) {
     const pkgx = join(path, "pkgx");
-    if (existsSync(pkgx)) {
-      const out = new Deno.Command(pkgx, { args: ["--version"] }).outputSync();
-      const stdout = new TextDecoder().decode(out.stdout);
-      const match = stdout.match(/^pkgx (\d+\.\d+\.\d+)/);
-      if (!match || new SemVer(match[1]).lt(new SemVer("2.4.0"))) {
-        Deno.exit(1);
-      }
-      return pkgx;
-    }
+    if (!existsSync(pkgx)) continue;
+    if (!pkgx_meets_minimum(pkgx)) Deno.exit(1);
+    return pkgx;
   }
   throw new Error("no `pkgx` found in `$PATH`");
 }
@@ -764,6 +810,166 @@ function install_prefix() {
   } else {
     return Path.home().join(".local");
   }
+}
+
+function user_home_from_passwd(user: string): string | undefined {
+  try {
+    const passwd = Deno.readTextFileSync("/etc/passwd");
+    for (const line of passwd.split("\n")) {
+      if (!line || line.startsWith("#")) continue;
+      const fields = line.split(":");
+      if (fields[0] === user) return fields[5] || undefined;
+    }
+  } catch {
+    // Ignore unreadable or absent passwd database and fall back to other lookups.
+  }
+
+  return undefined;
+}
+
+function user_home_from_dscl(user: string): string | undefined {
+  if (!existsSync("/usr/bin/dscl")) return undefined;
+
+  try {
+    const out = new Deno.Command("/usr/bin/dscl", {
+      args: [".", "-read", `/Users/${user}`, "NFSHomeDirectory"],
+    }).outputSync();
+    if (!out.success) return undefined;
+
+    const line = new TextDecoder().decode(out.stdout).trim();
+    const prefix = "NFSHomeDirectory:";
+    if (!line.startsWith(prefix)) return undefined;
+
+    const home = line.slice(prefix.length).trim();
+    return home || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function user_home(user: string): string | undefined {
+  // Prefer getent where available, but fall back to passwd parsing and macOS
+  // dscl so HOME can still be resolved when dropping privileges on systems
+  // without getent.
+  const getent = existsSync("/usr/bin/getent")
+    ? "/usr/bin/getent"
+    : existsSync("/bin/getent")
+    ? "/bin/getent"
+    : undefined;
+
+  if (getent) {
+    try {
+      const out = new Deno.Command(getent, {
+        args: ["passwd", user],
+      }).outputSync();
+      if (out.success) {
+        const fields = new TextDecoder().decode(out.stdout).trim().split(":");
+        if (fields[5]) return fields[5];
+      }
+    } catch {
+      // Ignore getent lookup failures and try portable fallbacks below.
+    }
+  }
+
+  return user_home_from_passwd(user) ?? user_home_from_dscl(user);
+}
+
+function reclaim_pkgx_cache_for(home: string, user: string): void {
+  // Targeted chown: only files currently owned by root, not user-owned
+  // entries the caller may have placed under .pkgx for their own reasons.
+  // Best-effort — if find/chown aren't reachable the inner pkgx may still
+  // EACCES, but most invocations succeed.
+  const cache = join(home, ".pkgx");
+  if (!existsSync(cache)) return;
+  const find = existsSync("/usr/bin/find") ? "/usr/bin/find" : "/bin/find";
+  try {
+    // `chown -h`: act on the symlink itself, not its target. Pkgx's
+    // versioned layout sprinkles v*, v<major>, v<major>.<minor> symlinks
+    // alongside the real version dirs; without -h chown would follow each
+    // link and chown the already-reclaimed target, leaving the link still
+    // root-owned (-h is in POSIX, present on both BSD and GNU chown).
+    new Deno.Command(find, {
+      args: [cache, "-uid", "0", "-exec", "chown", "-h", user, "{}", "+"],
+      stdout: "null",
+      stderr: "null",
+    }).outputSync();
+  } catch {
+    // best-effort
+  }
+}
+
+function pkgx_reachable_as(current: string, user: string): string | undefined {
+  // The caller has already enforced PKGX_MIN_VERSION for `current` via
+  // get_pkgx(); fallback candidates have not, so each return path below
+  // re-checks with pkgx_meets_minimum() to avoid handing back an
+  // unsupported binary (per #86 review).
+  if (reachable_as(current, user)) return current;
+
+  const home = user_home(user);
+  if (home) {
+    // Versioned pkgx.sh layout: ~/.pkgx/pkgx.sh/v<x.y.z>/bin/pkgx — pick the
+    // highest version that meets the minimum.
+    const root = join(home, ".pkgx/pkgx.sh");
+    if (existsSync(root)) {
+      let best: { v: SemVer; path: string } | undefined;
+      try {
+        if (Deno.statSync(root).isDirectory) {
+          for (const entry of Deno.readDirSync(root)) {
+            if (!entry.isDirectory || !entry.name.startsWith("v")) continue;
+            try {
+              const v = new SemVer(entry.name.slice(1));
+              if (v.lt(PKGX_MIN_VERSION)) continue;
+              const path = join(root, entry.name, "bin/pkgx");
+              if (!existsSync(path)) continue;
+              // Directory-name version is a cheap pre-filter; verify the
+              // actual binary too, matching the other fallback paths so a
+              // stale or non-executable `v*/bin/pkgx` can't be returned
+              // (per #86 review).
+              if (!pkgx_meets_minimum(path)) continue;
+              if (!best || v.gt(best.v)) best = { v, path };
+            } catch {
+              // skip malformed version dir
+            }
+          }
+        }
+      } catch {
+        // Ignore unreadable/non-directory pkgx.sh roots and fall back to other locations.
+      }
+      if (best) return best.path;
+    }
+    const local = join(home, ".local/bin/pkgx");
+    if (existsSync(local) && pkgx_meets_minimum(local)) return local;
+  }
+  if (
+    existsSync("/usr/local/bin/pkgx") &&
+    pkgx_meets_minimum("/usr/local/bin/pkgx")
+  ) {
+    return "/usr/local/bin/pkgx";
+  }
+  return undefined;
+}
+
+function reachable_as(p: string, user: string): boolean {
+  // Conservative heuristic: private home dirs are typically mode 700, so a
+  // path under another user's home is unreachable. System paths and the
+  // user's own home are assumed reachable.
+  const home = user_home(user);
+  if (home && (p === home || p.startsWith(`${home}/`))) return true;
+
+  // Shared Linuxbrew prefix lives under /home but is world-traversable and
+  // is treated as a system pkgx location by standardPath(). Without this
+  // exemption a pkgx installed via Linuxbrew would force the root-execution
+  // fallback, recreating the root-owned cache problem this code avoids
+  // (per #86 review). Honour $HOMEBREW_PREFIX in case it's elsewhere.
+  const brew = Deno.env.get("HOMEBREW_PREFIX") ?? "/home/linuxbrew/.linuxbrew";
+  if (p === brew || p.startsWith(`${brew}/`)) return true;
+
+  if (p === "/root" || p.startsWith("/root/")) return false;
+  if (p === "/var/root" || p.startsWith("/var/root/")) return false;
+
+  if (p.match(/^\/(home|Users)\/([^/]+)(?:\/|$)/)) return false;
+
+  return true;
 }
 
 function dev_stub_text(selfpath: string, bin_prefix: string, name: string) {
