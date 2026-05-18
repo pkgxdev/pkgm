@@ -109,6 +109,62 @@ jobs:
           ./pkgm.ts i spotify_player
           spotify_player --version
 
+  # Scaffolding-pass smoke for the Windows port. Uses an explicit
+  # `pkgx deno^2.1 run` invocation because the kernel doesn't interpret
+  # `#!/usr/bin/env -S pkgx …` shebangs on Windows; a `pkgm.cmd` wrapper
+  # that papers over this belongs in pkgxdev/setup's installer.ps1, not
+  # here.
+  #
+  # End-to-end install can't be exercised yet: the v2 dist layout
+  # (`v2/<pkg>/windows/x86-64/`) has 15 toolchain-layer packages built
+  # for Windows (bun, cmake, curl, deno, git, go, libarchive, nasm,
+  # ninja, openssl, perl, python, rust, sqlite, zlib) — no application
+  # packages. Per pkgxdev/pkgx#607 the manifest pipeline that
+  # produced them was rolled back about a year ago, so no new Windows
+  # builds are being shipped. We test what we can — that pkgm runs at
+  # all on Windows — and the install path will start passing once the
+  # upstream build pipeline comes back online.
+  test-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pkgxdev/setup@v4
+
+      - name: smoke - pkgm --version
+        # Verifies the floor: pkgx.exe is on PATH, deno can run the
+        # script, libpkgx imports resolve on Windows, parseArgs + the
+        # version arm exit 0. No filesystem touching yet.
+        run: |
+          $denoArgs = @(
+            'deno^2.1', 'run', '--ext=ts',
+            '--allow-sys=uid', '--allow-run', '--allow-env',
+            '--allow-read', '--allow-write', '--allow-ffi',
+            '--allow-net=dist.pkgx.dev',
+            './pkgm.ts', '--version'
+          )
+          pkgx @denoArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: smoke - pkgm ls on a fresh runner
+        # Exercises install_prefix() (now %LOCALAPPDATA%\pkgm on
+        # Windows) and the ls() candidate-paths branch. Fresh runner
+        # → no installed pkgs → empty output, exit 0. Catches regressions
+        # in the path-resolution layer without depending on
+        # dist.pkgx.dev having Windows builds.
+        run: |
+          $denoArgs = @(
+            'deno^2.1', 'run', '--ext=ts',
+            '--allow-sys=uid', '--allow-run', '--allow-env',
+            '--allow-read', '--allow-write', '--allow-ffi',
+            '--allow-net=dist.pkgx.dev',
+            './pkgm.ts', 'ls'
+          )
+          pkgx @denoArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   # Validates `sudo pkgm install` behaviour fixed in 2b33f20:
   #  - privilege drop so pkgx cache stays owned by $SUDO_USER, not root
   #  - HOME override so the cache lands under the invoking user's tree

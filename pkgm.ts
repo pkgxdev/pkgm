@@ -13,7 +13,23 @@ import { ensureDir, existsSync, walk } from "jsr:@std/fs@^1";
 import { parseArgs } from "jsr:@std/cli@^1";
 const { hydrate } = plumbing;
 
+// Path-separator: `;` on Windows, `:` on POSIX. Used everywhere we
+// split or join $PATH, since C:\ on Windows would tokenise wrong with `:`.
+const PATH_SEP = Deno.build.os == "windows" ? ";" : ":";
+
 function standardPath() {
+  if (Deno.build.os == "windows") {
+    // Windows: no /usr/local hierarchy and no homebrew. Return the
+    // baseline system dirs so subprocesses can still locate built-in
+    // commands (cmd, find, etc.) when we feed them an explicit PATH.
+    const systemRoot = Deno.env.get("SystemRoot") ?? "C:\\Windows";
+    return [
+      `${systemRoot}\\System32`,
+      systemRoot,
+      `${systemRoot}\\System32\\Wbem`,
+    ].join(PATH_SEP);
+  }
+
   let path = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
   // for pkgx installed via homebrew
@@ -183,6 +199,29 @@ async function install(args: string[], basePath: string) {
 
         const to_stub = join(dst, bin, entry.name);
 
+        if (Deno.build.os == "windows") {
+          // Emit a .cmd wrapper next to (and replacing) the hardlinked
+          // binary. PATHEXT lookup picks `.cmd` only if there's no
+          // `.exe` at the same stem, so we must remove the hardlink
+          // first or it would shadow the wrapper.
+          const stem = entry.name.replace(/\.(exe|bat|cmd)$/i, "");
+          const cmd_path = join(dst, bin, stem + ".cmd");
+          const target = join(bin_prefix, entry.name);
+          let cmd = "@echo off\r\n";
+          for (const [key, value] of Object.entries(env)) {
+            // Inside `set "K=V"` quotes the value is literal except for
+            // `%`, which cmd's parser still treats as variable-expand
+            // even when quoted. Escape as `%%` (batch-file convention).
+            const escaped = value.replace(/%/g, "%%");
+            cmd += `set "${key}=${escaped}"\r\n`;
+          }
+          cmd += `"${target}" %*\r\n`;
+          await Deno.remove(to_stub);
+          await Deno.writeTextFile(cmd_path, cmd);
+          rv.push(cmd_path);
+          continue;
+        }
+
         let sh = `#!/bin/sh\n`;
         for (const [key, value] of Object.entries(env)) {
           sh += `export ${key}="${value}"\n`;
@@ -204,7 +243,7 @@ async function install(args: string[], basePath: string) {
   if (
     !Deno.env
       .get("PATH")
-      ?.split(":")
+      ?.split(PATH_SEP)
       ?.includes(new Path(basePath).join("bin").string)
   ) {
     console.error(
@@ -438,6 +477,15 @@ async function symlink(src: string, dst: string) {
 
 //FIXME we only do major as that's typically all pkgs need, but like we should do better
 async function create_v_symlinks(prefix: string) {
+  if (Deno.build.os == "windows") {
+    // Skipped on Windows for v1: directory aliases would need either a
+    // junction (mklink /J via subprocess — Deno has no native API) or a
+    // dir symlink (admin/dev-mode). Installed pkgs are still accessible
+    // via their canonical v<x.y.z> path, which is what the stubs and
+    // mirror_directory steps reference anyway. v1/v2/... aliases are a
+    // user-navigation convenience, not a runtime requirement.
+    return;
+  }
   const shelf = dirname(prefix);
 
   const versions = [];
@@ -514,12 +562,33 @@ function symlink_with_overwrite(src: string, dst: string) {
   if (existsSync(dst) && Deno.lstatSync(dst).isSymlink) {
     Deno.removeSync(dst);
   }
+  if (Deno.build.os == "windows") {
+    // Windows: file symlinks need admin or developer mode. Hardlinks
+    // work without elevation as long as src and dst are on the same
+    // volume — true for our install (everything under
+    // %LOCALAPPDATA%\pkgm) once the pkg cache itself lives there. Fall
+    // back to a plain copy if even hardlink fails (cross-volume etc).
+    // Directory symlinks are handled by the caller skipping
+    // create_v_symlinks() on Windows.
+    const isDir = existsSync(src) && Deno.statSync(src).isDirectory;
+    if (isDir) {
+      Deno.symlinkSync(src, dst, { type: "dir" });
+    } else {
+      try {
+        Deno.linkSync(src, dst);
+      } catch {
+        Deno.copyFileSync(src, dst);
+      }
+    }
+    return;
+  }
   Deno.symlinkSync(src, dst);
 }
 
 function get_pkgx() {
-  for (const path of Deno.env.get("PATH")!.split(":")) {
-    const pkgx = join(path, "pkgx");
+  const exe = Deno.build.os == "windows" ? "pkgx.exe" : "pkgx";
+  for (const path of Deno.env.get("PATH")!.split(PATH_SEP)) {
+    const pkgx = join(path, exe);
     if (existsSync(pkgx)) {
       const out = new Deno.Command(pkgx, { args: ["--version"] }).outputSync();
       const stdout = new TextDecoder().decode(out.stdout);
@@ -534,12 +603,13 @@ function get_pkgx() {
 }
 
 async function* ls() {
-  for (
-    const path of [
-      new Path("/usr/local/pkgs"),
-      Path.home().join(".local/pkgs"),
-    ]
-  ) {
+  // On POSIX a host can have both a system-wide /usr/local/pkgs and
+  // a per-user ~/.local/pkgs install — we list both. Windows has only
+  // the per-user prefix from install_prefix() (no /usr/local concept).
+  const candidates = Deno.build.os == "windows"
+    ? [install_prefix().join("pkgs")]
+    : [new Path("/usr/local/pkgs"), Path.home().join(".local/pkgs")];
+  for (const path of candidates) {
     if (!path.isDirectory()) continue;
     const dirs = [path];
     let dir: Path | undefined;
@@ -658,11 +728,14 @@ function writable(path: string) {
 
 async function outdated() {
   const pkgs: Installation[] = [];
-  for await (const pkg of walk_pkgs(new Path("/usr/local/pkgs"))) {
-    pkgs.push(pkg);
-  }
-  for await (const pkg of walk_pkgs(Path.home().join(".local/pkgs"))) {
-    pkgs.push(pkg);
+  // See ls(): POSIX scans both prefixes, Windows only the user one.
+  const candidates = Deno.build.os == "windows"
+    ? [install_prefix().join("pkgs")]
+    : [new Path("/usr/local/pkgs"), Path.home().join(".local/pkgs")];
+  for (const candidate of candidates) {
+    for await (const pkg of walk_pkgs(candidate)) {
+      pkgs.push(pkg);
+    }
   }
 
   const { pkgs: raw_graph } = await hydrate(
@@ -758,6 +831,18 @@ async function update() {
 }
 
 function install_prefix() {
+  // Windows: per-user only, under %LOCALAPPDATA%\pkgm. Mirrors pkgx's
+  // own pattern (installer.ps1 in pkgxdev/setup uses
+  // $env:LOCALAPPDATA\pkgx, and libpkgx's config.rs falls back to
+  // dirs_next::data_local_dir() which resolves to %LOCALAPPDATA% on
+  // Windows). pkgx itself doesn't model UAC elevation; we follow.
+  // Fallback path-join is a defensive equivalent for the rare runner
+  // missing the LOCALAPPDATA env var.
+  if (Deno.build.os == "windows") {
+    const localAppData = Deno.env.get("LOCALAPPDATA") ??
+      join(Deno.env.get("USERPROFILE") ?? "", "AppData", "Local");
+    return new Path(join(localAppData, "pkgm"));
+  }
   // if /usr/local is writable, use that
   if (writable("/usr/local")) {
     return new Path("/usr/local");
