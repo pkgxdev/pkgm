@@ -297,25 +297,43 @@ async function query_pkgx(
   set("PKGX_DIST_URL");
   set("XDG_DATA_HOME");
 
-  const needs_sudo_backwards = install_prefix().string == "/usr/local";
-  let cmd = needs_sudo_backwards ? "/usr/bin/sudo" : pkgx;
-  if (needs_sudo_backwards) {
-    if (!Deno.env.get("SUDO_USER")) {
-      if (Deno.uid() == 0) {
+  const isRoot = Deno.uid() == 0;
+  const sudoUser = Deno.env.get("SUDO_USER");
+  const prefix = install_prefix().string;
+  const isSystemPrefix = prefix == "/usr/local";
+
+  let cmd = pkgx;
+  let cmd_args = args;
+
+  if (isSystemPrefix) {
+    if (isRoot && sudoUser) {
+      // Drop privileges so pkgx writes its cache as the invoking user, not root.
+      // But only if pkgx is reachable from sudoUser — otherwise the inner sudo
+      // aborts with "unable to execute …: Permission denied" (pkgxdev/pkgm#68).
+      const reachable = pkgx_reachable_as(pkgx, sudoUser);
+      if (reachable) {
+        cmd = "/usr/bin/sudo";
+        cmd_args = ["-u", sudoUser, "--", reachable, ...args];
+        // Override HOME, or pkgx will cache back under /root/ where sudoUser
+        // can't reach it on the next invocation.
+        const home = user_home(sudoUser);
+        if (home) env.HOME = home;
+      } else if (Deno.env.get("PKGM_DEBUG")) {
         console.error(
-          "%cwarning",
-          "color:yellow",
-          "installing as root; installing via `sudo` is preferred",
+          `pkgm: \`pkgx\` at ${pkgx} is not reachable as ${sudoUser}; running it as root`,
         );
       }
-      cmd = pkgx;
-    } else {
-      args.unshift("-u", Deno.env.get("SUDO_USER")!, pkgx);
+    } else if (isRoot) {
+      console.error(
+        "%cwarning",
+        "color:yellow",
+        "installing as root; installing via `sudo` is preferred",
+      );
     }
   }
 
   const proc = new Deno.Command(cmd, {
-    args: [...args, "--json=v1"],
+    args: [...cmd_args, "--json=v1"],
     stdout: "piped",
     env,
     clearEnv: true,
@@ -764,6 +782,116 @@ function install_prefix() {
   } else {
     return Path.home().join(".local");
   }
+}
+
+function user_home_from_passwd(user: string): string | undefined {
+  try {
+    const passwd = Deno.readTextFileSync("/etc/passwd");
+    for (const line of passwd.split("\n")) {
+      if (!line || line.startsWith("#")) continue;
+      const fields = line.split(":");
+      if (fields[0] === user) return fields[5] || undefined;
+    }
+  } catch {
+    // Ignore unreadable or absent passwd database and fall back to other lookups.
+  }
+
+  return undefined;
+}
+
+function user_home_from_dscl(user: string): string | undefined {
+  if (!existsSync("/usr/bin/dscl")) return undefined;
+
+  try {
+    const out = new Deno.Command("/usr/bin/dscl", {
+      args: [".", "-read", `/Users/${user}`, "NFSHomeDirectory"],
+    }).outputSync();
+    if (!out.success) return undefined;
+
+    const line = new TextDecoder().decode(out.stdout).trim();
+    const prefix = "NFSHomeDirectory:";
+    if (!line.startsWith(prefix)) return undefined;
+
+    const home = line.slice(prefix.length).trim();
+    return home || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function user_home(user: string): string | undefined {
+  // Prefer getent where available, but fall back to passwd parsing and macOS
+  // dscl so HOME can still be resolved when dropping privileges on systems
+  // without getent.
+  const getent = existsSync("/usr/bin/getent")
+    ? "/usr/bin/getent"
+    : existsSync("/bin/getent")
+    ? "/bin/getent"
+    : undefined;
+
+  if (getent) {
+    try {
+      const out = new Deno.Command(getent, {
+        args: ["passwd", user],
+      }).outputSync();
+      if (out.success) {
+        const fields = new TextDecoder().decode(out.stdout).trim().split(":");
+        if (fields[5]) return fields[5];
+      }
+    } catch {
+      // Ignore getent lookup failures and try portable fallbacks below.
+    }
+  }
+
+  return user_home_from_passwd(user) ?? user_home_from_dscl(user);
+}
+
+function pkgx_reachable_as(current: string, user: string): string | undefined {
+  if (reachable_as(current, user)) return current;
+
+  const home = user_home(user);
+  if (home) {
+    // Versioned pkgx.sh layout: ~/.pkgx/pkgx.sh/v<x.y.z>/bin/pkgx — pick the highest.
+    const root = join(home, ".pkgx/pkgx.sh");
+    if (existsSync(root)) {
+      let best: { v: SemVer; path: string } | undefined;
+      try {
+        if (Deno.statSync(root).isDirectory) {
+          for (const entry of Deno.readDirSync(root)) {
+            if (!entry.isDirectory || !entry.name.startsWith("v")) continue;
+            try {
+              const v = new SemVer(entry.name.slice(1));
+              const path = join(root, entry.name, "bin/pkgx");
+              if (!existsSync(path)) continue;
+              if (!best || v.gt(best.v)) best = { v, path };
+            } catch { /* skip malformed version dir */ }
+          }
+        }
+      } catch {
+        // Ignore unreadable/non-directory pkgx.sh roots and fall back to other locations.
+      }
+      if (best) return best.path;
+    }
+    const local = join(home, ".local/bin/pkgx");
+    if (existsSync(local)) return local;
+  }
+  if (existsSync("/usr/local/bin/pkgx")) return "/usr/local/bin/pkgx";
+  return undefined;
+}
+
+function reachable_as(p: string, user: string): boolean {
+  // Conservative heuristic: private home dirs are typically mode 700, so a
+  // path under another user's home is unreachable. System paths and the
+  // user's own home are assumed reachable.
+  const home = user_home(user);
+  if (home && (p === home || p.startsWith(`${home}/`))) return true;
+
+  if (p === "/root" || p.startsWith("/root/")) return false;
+  if (p === "/var/root" || p.startsWith("/var/root/")) return false;
+
+  if (p.match(/^\/(home|Users)\/([^/]+)(?:\/|$)/)) return false;
+
+  return true;
 }
 
 function dev_stub_text(selfpath: string, bin_prefix: string, name: string) {
