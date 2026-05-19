@@ -43,8 +43,9 @@ const parsedArgs = parseArgs(Deno.args, {
     v: "version",
     h: "help",
     p: "pin",
+    f: "force",
   },
-  boolean: ["help", "version", "pin"],
+  boolean: ["help", "version", "pin", "force"],
 });
 
 if (parsedArgs.help || parsedArgs._[0] == "help") {
@@ -511,8 +512,19 @@ function expand_runtime_env(json: JsonResponse, basePath: string) {
 }
 
 function symlink_with_overwrite(src: string, dst: string) {
-  if (existsSync(dst) && Deno.lstatSync(dst).isSymlink) {
-    Deno.removeSync(dst);
+  try {
+    const stat = Deno.lstatSync(dst);
+    if (stat.isSymlink) {
+      Deno.removeSync(dst);
+    } else if (parsedArgs.force) {
+      Deno.removeSync(dst);
+    } else {
+      throw new Error(
+        `refusing to overwrite non-symlink at: ${dst} (use --force to override)`,
+      );
+    }
+  } catch (e) {
+    if (!(e instanceof Deno.errors.NotFound)) throw e;
   }
   Deno.symlinkSync(src, dst);
 }
