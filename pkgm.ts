@@ -96,6 +96,7 @@ if (parsedArgs.help || parsedArgs._[0] == "help") {
     case "li":
       if (install_prefix().string != "/usr/local") {
         const dst = Path.home().join(".local");
+        assert_manifest_resolved(dst);
         await install(await combined_specs(dst, args), dst.string);
         await record_install(dst, args);
       } else {
@@ -329,7 +330,8 @@ async function query_pkgx(
   const needs_sudo_backwards = install_prefix().string == "/usr/local";
   let cmd = needs_sudo_backwards ? "/usr/bin/sudo" : pkgx;
   if (needs_sudo_backwards) {
-    if (!Deno.env.get("SUDO_USER")) {
+    const sudo_user = Deno.env.get("SUDO_USER");
+    if (!sudo_user) {
       if (Deno.uid() == 0) {
         console.error(
           "%cwarning",
@@ -338,8 +340,18 @@ async function query_pkgx(
         );
       }
       cmd = pkgx;
+    } else if (reachable_as(pkgx, sudo_user)) {
+      // drop privileges so pkgx writes its cache as the invoking user, and point
+      // HOME at their home so it doesn’t cache back under /root/ where they
+      // couldn’t reach it on the next invocation.
+      const home = user_home(sudo_user);
+      if (home) env.HOME = home;
+      args.unshift("-u", sudo_user, pkgx);
     } else {
-      args.unshift("-u", Deno.env.get("SUDO_USER")!, pkgx);
+      // pkgx lives somewhere the unprivileged user can’t execute it (e.g. only
+      // under /root/.pkgx). dropping privileges would abort with “Permission
+      // denied”, so run it as root instead (pkgxdev/pkgm#68).
+      cmd = pkgx;
     }
   }
 
@@ -377,6 +389,34 @@ async function query_pkgx(
     },
     env,
   ];
+}
+
+// home directory of the invoking (pre-sudo) user, so pkgx caches under their
+// tree rather than /root/. getent is the portable lookup on Linux; on macOS it
+// is absent, but the /root/.pkgx scenario this guards against doesn’t arise
+// there in practice, so a missing home (→ no override) is fine.
+function user_home(user: string): string | undefined {
+  try {
+    const out = new Deno.Command("/usr/bin/getent", {
+      args: ["passwd", user],
+    }).outputSync();
+    if (!out.success) return undefined;
+    const fields = new TextDecoder().decode(out.stdout).trim().split(":");
+    return fields[5] || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// can `user` execute the binary at `p`? private home dirs are typically mode
+// 700, so a path under another user’s home is unreachable; system paths and the
+// user’s own home are assumed reachable. used to decide whether dropping
+// privileges to `user` would leave pkgx unrunnable (pkgxdev/pkgm#68).
+function reachable_as(p: string, user: string): boolean {
+  if (p.startsWith("/root/")) return user === "root";
+  const m = p.match(/^\/home\/([^/]+)\//);
+  if (m) return m[1] === user;
+  return true;
 }
 
 async function mirror_directory(dst: string, src: string, prefix: string) {
@@ -794,6 +834,14 @@ async function update() {
     }
   }
 
+  // nothing satisfies a newer in-range version: everything’s current. return
+  // before calling install(), which treats an empty arg list as a usage error
+  // ("no packages specified") and exits non-zero.
+  if (update_list.length == 0) {
+    console.error("everything is up-to-date");
+    return;
+  }
+
   for (const pkgspec of update_list) {
     const pkg = utils.pkg.parse(pkgspec);
     console.log(
@@ -858,7 +906,22 @@ function manifest_entry_kind(value: string): ManifestEntryKind {
 // finished. no manifest at all → legacy behavior (see hydrate_graph), so
 // existing installs keep working untouched.
 function assert_manifest_resolved(prefix = install_prefix()) {
-  const manifest = read_manifest(prefix);
+  let manifest;
+  try {
+    manifest = read_manifest(prefix);
+  } catch (err) {
+    // invalid TOML (e.g. a partially-finished hand-edit) must block commands
+    // with a clear message, not crash with an uncaught parse stack trace.
+    console.error(
+      "%cerror",
+      "color:red",
+      `could not parse ${manifest_path(prefix)}: ${
+        err instanceof Error ? err.message : err
+      }`,
+    );
+    console.error("fix the TOML syntax and re-run");
+    Deno.exit(1);
+  }
   if (!manifest) return;
   const unresolved = Object.entries(manifest)
     .filter(([, value]) => manifest_entry_kind(value) == "unresolved")
@@ -1039,9 +1102,10 @@ async function combined_specs(prefix: Path, args: string[]): Promise<string[]> {
 }
 
 // map each requested arg to its canonical project and the constraint you asked
-// for. a bare name (`node`) yields `*` — track latest; a versioned spec
-// (`node@22`) yields its range (`^22`). pantry hiccups are non-fatal: the
-// package will still be picked up as a pin by record_install’s tree walk.
+// for. a bare name (`node`) yields `*` here, which record_install then
+// major-locks to the installed version (`^<installed>`); a versioned spec
+// (`node@22`) yields its range (`^22`) verbatim. pantry hiccups are non-fatal:
+// the package will still be picked up as a pin by record_install’s tree walk.
 async function requested_constraints(
   args: string[],
 ): Promise<Record<string, string>> {

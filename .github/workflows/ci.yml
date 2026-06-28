@@ -75,7 +75,9 @@ jobs:
       - run: ./pkgm.ts update
       - run: if pkgx semverator satisfies '>=1.19' "$(hyperfine --version | cut -f 2 -d ' ')"; then false; fi
       # …until the pin is widened to `*`, after which `update` tracks latest.
-      - run: sed -i'' 's/= "~1.18"/= "*"/' "${XDG_CONFIG_HOME:-$HOME/.config}/pkgm/manifest.toml"
+      # `-i.bak` (not bare `-i`) so it's portable: GNU and BSD/macOS sed both
+      # take the suffix here; the leftover .bak file is harmless.
+      - run: sed -i.bak 's/= "~1.18"/= "*"/' "${XDG_CONFIG_HOME:-$HOME/.config}/pkgm/manifest.toml"
       - run: ./pkgm.ts outdated | grep hyperfine
       - run: ./pkgm.ts update
       - run: pkgx semverator satisfies '>=1.19' "$(hyperfine --version | cut -f 2 -d ' ')"
@@ -130,6 +132,13 @@ jobs:
       - name: sudo install drops privileges and overrides HOME
         run: |
           set -eux
+          # The pkgm.ts shebang makes pkgx fetch a private deno (and unzip, to
+          # unpack deno’s .zip) the first time it runs. Under sudo that bootstrap
+          # is the kernel-invoked `pkgx … deno run` executing as root with
+          # HOME=/root, so it lands in /root/.pkgx before any pkgm code runs —
+          # pkgm can’t relocate it. Warm it before the marker so the checks below
+          # scope only to what the install itself creates.
+          sudo ./pkgm.ts --version
           # marker to scope ownership checks to files created by this install
           touch /tmp/pkgm-sudo-marker
           sudo ./pkgm.ts i hyperfine
@@ -233,7 +242,9 @@ jobs:
           ./pkgm.ts i uv
           out=$(./pkgm.ts outdated 2>&1 || true)
           echo "$out"
-          echo "$out" | (! grep -q "Uncaught")
+          if echo "$out" | grep -q "Uncaught"; then
+            echo "outdated raised an uncaught exception"; exit 1
+          fi
       - name: uv then node keeps outdated/update alive
         run: |
           set -eux
@@ -242,7 +253,9 @@ jobs:
           ./pkgm.ts i node
           out=$(./pkgm.ts outdated 2>&1 || true)
           echo "$out"
-          echo "$out" | (! grep -q "Uncaught")
+          if echo "$out" | grep -q "Uncaught"; then
+            echo "outdated raised an uncaught exception"; exit 1
+          fi
 
       # #88 root cause: a later install must resolve against the whole requested
       # set (via the manifest), so python's strict zlib pin (pulled in by uv)
