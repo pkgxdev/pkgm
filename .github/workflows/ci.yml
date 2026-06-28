@@ -68,9 +68,15 @@ jobs:
       - run: test ! -d ~/.local/bin/openssl
       - run: if [[ $(~/.local/bin/node --version) != v20* ]]; then false; fi
 
+      # `@1.18` records a `~1.18` pin in the manifest, so `update` must respect
+      # it and NOT cross to 1.19…
       - run: ./pkgm.ts i hyperfine@1.18
-      - run: ./pkgm.ts outdated | grep hyperfine
       - run: if pkgx semverator satisfies '>=1.19' "$(hyperfine --version | cut -f 2 -d ' ')"; then false; fi
+      - run: ./pkgm.ts update
+      - run: if pkgx semverator satisfies '>=1.19' "$(hyperfine --version | cut -f 2 -d ' ')"; then false; fi
+      # …until the pin is widened to `*`, after which `update` tracks latest.
+      - run: sed -i'' 's/= "~1.18"/= "*"/' "${XDG_CONFIG_HOME:-$HOME/.config}/pkgm/manifest.toml"
+      - run: ./pkgm.ts outdated | grep hyperfine
       - run: ./pkgm.ts update
       - run: pkgx semverator satisfies '>=1.19' "$(hyperfine --version | cut -f 2 -d ' ')"
 
@@ -175,3 +181,86 @@ jobs:
           # crashing when only the sudo-only pkgx remains reachable.
           test $rc -eq 0
           test -x /usr/local/bin/gum
+
+  # Exercises the manifest behaviour added for pkgxdev/pkgm#88. macOS mirrors
+  # where the issue was reported and avoids the linux rpath caveats above.
+  manifest:
+    runs-on: macos-latest
+    env:
+      MANIFEST: ${{ github.workspace }}/.config/pkgm/manifest.toml
+      XDG_CONFIG_HOME: ${{ github.workspace }}/.config
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pkgxdev/setup@v4
+
+      # install records intent (requested → major-lock) and marks deps `dep`.
+      - name: install records intent and deps
+        run: |
+          set -eux
+          ./pkgm.ts i curl
+          test -f "$MANIFEST"
+          cat "$MANIFEST"
+          grep -qE '"curl.se" = "\^[0-9]' "$MANIFEST"   # requested → ^major
+          grep -q '= "dep"' "$MANIFEST"                 # transitive deps → dep
+          # no blank lines between entries (only the one after the header)
+          test "$(grep -c '^$' "$MANIFEST")" -eq 1
+
+      # deleting the manifest then reinstalling recreates it.
+      - name: manifest is recreated
+        run: |
+          set -eux
+          rm -f "$MANIFEST"
+          ./pkgm.ts i curl
+          test -f "$MANIFEST"
+          grep -q '= "dep"' "$MANIFEST"
+
+      # uninstall drops the package's entry.
+      - name: uninstall removes the entry
+        run: |
+          set -eux
+          ./pkgm.ts rm curl
+          if grep -q '"curl.se"' "$MANIFEST"; then
+            echo "curl.se was not removed"; cat "$MANIFEST"; exit 1
+          fi
+
+      # issue #88: conflicting transitive deps must never surface as an uncaught
+      # exception — in either install order.
+      - name: node then uv keeps outdated/update alive
+        run: |
+          set -eux
+          rm -rf "$HOME/.local" "$XDG_CONFIG_HOME/pkgm"
+          ./pkgm.ts i node
+          ./pkgm.ts i uv
+          out=$(./pkgm.ts outdated 2>&1 || true)
+          echo "$out"
+          echo "$out" | (! grep -q "Uncaught")
+      - name: uv then node keeps outdated/update alive
+        run: |
+          set -eux
+          rm -rf "$HOME/.local" "$XDG_CONFIG_HOME/pkgm"
+          ./pkgm.ts i uv
+          ./pkgm.ts i node
+          out=$(./pkgm.ts outdated 2>&1 || true)
+          echo "$out"
+          echo "$out" | (! grep -q "Uncaught")
+
+      # #88 root cause: a later install must resolve against the whole requested
+      # set (via the manifest), so python's strict zlib pin (pulled in by uv)
+      # wins in either order — node, whose constraint is loose, must not relink
+      # zlib to whatever it picked in isolation. derived from uv, not hardcoded,
+      # so it survives the pantry moving the pin.
+      - name: shared dep settles on the strict pin in either order
+        run: |
+          set -eux
+          zver() {
+            basename "$(dirname "$(dirname "$(readlink "$HOME/.local/lib/libz.dylib")")")"
+          }
+          reset() { rm -rf "$HOME/.local" "$XDG_CONFIG_HOME/pkgm"; }
+          # the version uv (→ python) requires; this must win throughout.
+          reset; ./pkgm.ts i uv >/dev/null
+          pin=$(zver); echo "uv pins zlib to $pin"
+          ./pkgm.ts i node >/dev/null
+          test "$(zver)" = "$pin"   # adding node must not relink zlib
+          # other order must converge to the same pin
+          reset; ./pkgm.ts i node >/dev/null; ./pkgm.ts i uv >/dev/null
+          test "$(zver)" = "$pin"
