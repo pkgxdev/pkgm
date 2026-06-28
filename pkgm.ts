@@ -11,7 +11,25 @@ import {
 import { dirname, join } from "jsr:@std/path@^1";
 import { ensureDir, existsSync, walk } from "jsr:@std/fs@^1";
 import { parseArgs } from "jsr:@std/cli@^1";
+import { parse as parse_toml } from "jsr:@std/toml@^1";
 const { hydrate } = plumbing;
+
+// declared up here (not beside the other manifest helpers) because the
+// top-level command dispatch below runs during module evaluation and can call
+// record_install → apply_manifest before a `const` placed lower would be
+// initialized (temporal dead zone).
+const MANIFEST_HEADER =
+  `# pkgm manifest — the packages you’ve asked pkgm to manage.
+#
+# key = a package; value = either:
+#   a semver range  — keep the package within this range; "*" means any (track latest)
+#                     e.g. "*", "^20", ">=1.18", "=1.3.1"
+#   "dep"           — a transitive dependency; let resolution pick the version
+#
+# pkgm records new packages here for you. edit a value and save to change how a
+# package is tracked; on a version conflict pkgm will ask you to edit this file.
+
+`;
 
 function standardPath() {
   let path = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
@@ -64,14 +82,23 @@ if (parsedArgs.help || parsedArgs._[0] == "help") {
     case "install":
     case "i":
       {
-        const rv = await install(args, install_prefix().string);
+        assert_manifest_resolved();
+        const prefix = install_prefix();
+        const rv = await install(
+          await combined_specs(prefix, args),
+          prefix.string,
+        );
+        await record_install(prefix, args);
         console.log(rv.join("\n"));
       }
       break;
     case "local-install":
     case "li":
       if (install_prefix().string != "/usr/local") {
-        await install(args, Path.home().join(".local").string);
+        const dst = Path.home().join(".local");
+        assert_manifest_resolved(dst);
+        await install(await combined_specs(dst, args), dst.string);
+        await record_install(dst, args);
       } else {
         console.error("deprecated: use `pkgm install` without `sudo` instead");
       }
@@ -87,6 +114,7 @@ if (parsedArgs.help || parsedArgs._[0] == "help") {
     case "uninstall":
     case "rm":
       {
+        assert_manifest_resolved();
         let all_success = true;
         for (const arg of args) {
           if (!(await uninstall(arg))) {
@@ -105,6 +133,7 @@ if (parsedArgs.help || parsedArgs._[0] == "help") {
     case "up":
     case "update":
     case "upgrade":
+      assert_manifest_resolved();
       await update();
       break;
 
@@ -113,6 +142,7 @@ if (parsedArgs.help || parsedArgs._[0] == "help") {
       Deno.exit(1);
       break;
     case "outdated":
+      assert_manifest_resolved();
       await outdated();
       break;
     default:
@@ -300,7 +330,8 @@ async function query_pkgx(
   const needs_sudo_backwards = install_prefix().string == "/usr/local";
   let cmd = needs_sudo_backwards ? "/usr/bin/sudo" : pkgx;
   if (needs_sudo_backwards) {
-    if (!Deno.env.get("SUDO_USER")) {
+    const sudo_user = Deno.env.get("SUDO_USER");
+    if (!sudo_user) {
       if (Deno.uid() == 0) {
         console.error(
           "%cwarning",
@@ -309,8 +340,18 @@ async function query_pkgx(
         );
       }
       cmd = pkgx;
+    } else if (reachable_as(pkgx, sudo_user)) {
+      // drop privileges so pkgx writes its cache as the invoking user, and point
+      // HOME at their home so it doesn’t cache back under /root/ where they
+      // couldn’t reach it on the next invocation.
+      const home = user_home(sudo_user);
+      if (home) env.HOME = home;
+      args.unshift("-u", sudo_user, pkgx);
     } else {
-      args.unshift("-u", Deno.env.get("SUDO_USER")!, pkgx);
+      // pkgx lives somewhere the unprivileged user can’t execute it (e.g. only
+      // under /root/.pkgx). dropping privileges would abort with “Permission
+      // denied”, so run it as root instead (pkgxdev/pkgm#68).
+      cmd = pkgx;
     }
   }
 
@@ -348,6 +389,34 @@ async function query_pkgx(
     },
     env,
   ];
+}
+
+// home directory of the invoking (pre-sudo) user, so pkgx caches under their
+// tree rather than /root/. getent is the portable lookup on Linux; on macOS it
+// is absent, but the /root/.pkgx scenario this guards against doesn’t arise
+// there in practice, so a missing home (→ no override) is fine.
+function user_home(user: string): string | undefined {
+  try {
+    const out = new Deno.Command("/usr/bin/getent", {
+      args: ["passwd", user],
+    }).outputSync();
+    if (!out.success) return undefined;
+    const fields = new TextDecoder().decode(out.stdout).trim().split(":");
+    return fields[5] || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// can `user` execute the binary at `p`? private home dirs are typically mode
+// 700, so a path under another user’s home is unreachable; system paths and the
+// user’s own home are assumed reachable. used to decide whether dropping
+// privileges to `user` would leave pkgx unrunnable (pkgxdev/pkgm#68).
+function reachable_as(p: string, user: string): boolean {
+  if (p.startsWith("/root/")) return user === "root";
+  const m = p.match(/^\/home\/([^/]+)\//);
+  if (m) return m[1] === user;
+  return true;
 }
 
 async function mirror_directory(dst: string, src: string, prefix: string) {
@@ -511,7 +580,16 @@ function expand_runtime_env(json: JsonResponse, basePath: string) {
 }
 
 function symlink_with_overwrite(src: string, dst: string) {
-  if (existsSync(dst) && Deno.lstatSync(dst).isSymlink) {
+  // existsSync follows symlinks, so a *broken* one reads as absent and the
+  // create below then fails with EEXIST (e.g. libpng’s `.la` symlinks during a
+  // re-mirror). lstat sees the link itself; remove any symlink, broken or not.
+  let stat;
+  try {
+    stat = Deno.lstatSync(dst);
+  } catch {
+    stat = undefined;
+  }
+  if (stat?.isSymlink) {
     Deno.removeSync(dst);
   }
   Deno.symlinkSync(src, dst);
@@ -604,12 +682,23 @@ async function uninstall(arg: string) {
   pkg_dirs.push(dir);
   for await (const [pkgdir, { isDirectory }] of dir.ls()) {
     if (!isDirectory) continue;
-    for await (const { path, isDirectory } of walk(pkgdir.string)) {
+    for await (const { path } of walk(pkgdir.string)) {
       const leaf = new Path(path).relative({ to: pkgdir });
       const resolved_path = root.join(leaf);
+      // a second installed version (e.g. zlib 1.3.1 alongside 1.3.2) yields the
+      // same resolved leaf; dedupe so we don’t try to remove it twice.
       if (set.has(resolved_path.string)) continue;
-      if (!resolved_path.exists()) continue;
-      if (isDirectory) {
+      set.add(resolved_path.string);
+      // lstat, not exists() — exists() follows links, so a symlink pointing
+      // into a sibling version dir we’re also removing reads as absent and gets
+      // orphaned. lstat sees the link itself.
+      let stat;
+      try {
+        stat = Deno.lstatSync(resolved_path.string);
+      } catch {
+        continue;
+      }
+      if (stat.isDirectory) {
         dirs.push(resolved_path);
       } else {
         files.push(resolved_path);
@@ -625,8 +714,10 @@ async function uninstall(arg: string) {
     Deno.exit(1);
   }
   for (const path of files) {
-    if (!path.isDirectory()) {
+    try {
       Deno.removeSync(path.string);
+    } catch {
+      // already gone — tolerate (e.g. a leaf shared by two installed versions)
     }
   }
   for (const path of dirs) {
@@ -640,6 +731,19 @@ async function uninstall(arg: string) {
   }
   for (const path of pkg_dirs) {
     Deno.removeSync(path.string, { recursive: true });
+  }
+
+  try {
+    apply_manifest(root, {}, [found.project]);
+  } catch (err) {
+    // manifest upkeep is best-effort; never fail an uninstall over it
+    console.error(
+      "%c! warning:",
+      "color:yellow",
+      `could not drop ${found.project} from ${manifest_path(root)}: ${
+        err instanceof Error ? err.message : err
+      }`,
+    );
   }
 
   return true;
@@ -665,22 +769,15 @@ async function outdated() {
     pkgs.push(pkg);
   }
 
-  const { pkgs: raw_graph } = await hydrate(
-    pkgs.map((x) => ({
-      project: x.pkg.project,
-      constraint: new semver.Range(`^${x.pkg.version}`),
-    })),
-  );
-  const graph: Record<string, semver.Range> = {};
-  for (const { project, constraint } of raw_graph) {
-    graph[project] = constraint;
-  }
+  const graph = await hydrate_graph(pkgs);
 
   for (const { path, pkg } of pkgs) {
+    const range = graph[pkg.project];
+    if (!range) continue; // orphan: not reachable from the requested set
     const versions = await hooks.useInventory().get(pkg);
-    // console.log(pkg, graph[pkg.project]);
+    // console.log(pkg, range);
     const constrained_versions = versions.filter(
-      (x) => graph[pkg.project].satisfies(x) && x.gt(pkg.version),
+      (x) => range.satisfies(x) && x.gt(pkg.version),
     );
     if (constrained_versions.length) {
       console.log(
@@ -719,29 +816,30 @@ async function update() {
     pkgs.push(pkg);
   }
 
-  const { pkgs: raw_graph } = await hydrate(
-    pkgs.map((x) => ({
-      project: x.pkg.project,
-      constraint: new semver.Range(`^${x.pkg.version}`),
-    })),
-  );
-  const graph: Record<string, semver.Range> = {};
-  for (const { project, constraint } of raw_graph) {
-    graph[project] = constraint;
-  }
+  const graph = await hydrate_graph(pkgs);
 
   const update_list = [];
 
   for (const { pkg } of pkgs) {
+    const range = graph[pkg.project];
+    if (!range) continue; // orphan: not reachable from the requested set
     const versions = await hooks.useInventory().get(pkg);
     const constrained_versions = versions.filter(
-      (x) => graph[pkg.project].satisfies(x) && x.gt(pkg.version),
+      (x) => range.satisfies(x) && x.gt(pkg.version),
     );
 
     if (constrained_versions.length) {
       const pkgspec = `${pkg.project}=${constrained_versions.slice(-1)[0]}`;
       update_list.push(pkgspec);
     }
+  }
+
+  // nothing satisfies a newer in-range version: everything’s current. return
+  // before calling install(), which treats an empty arg list as a usage error
+  // ("no packages specified") and exits non-zero.
+  if (update_list.length == 0) {
+    console.error("everything is up-to-date");
+    return;
   }
 
   for (const pkgspec of update_list) {
@@ -763,6 +861,313 @@ function install_prefix() {
     return new Path("/usr/local");
   } else {
     return Path.home().join(".local");
+  }
+}
+
+// where the manifest lives for a given install prefix. user installs follow XDG
+// (config, since it’s hand-editable intent); the /usr/local prefix has no XDG
+// home so it uses the FHS-conventional …/etc.
+function manifest_path(prefix = install_prefix()): Path {
+  if (prefix.string == "/usr/local") {
+    return new Path("/usr/local/etc/pkgm/manifest.toml");
+  }
+  const xdg = Deno.env.get("XDG_CONFIG_HOME");
+  const base = xdg ? new Path(xdg) : Path.home().join(".config");
+  return base.join("pkgm/manifest.toml");
+}
+
+function read_manifest(
+  prefix = install_prefix(),
+): Record<string, string> | undefined {
+  const path = manifest_path(prefix);
+  if (!existsSync(path.string)) return undefined;
+  const raw = parse_toml(Deno.readTextFileSync(path.string));
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    out[key] = `${value}`;
+  }
+  return out;
+}
+
+type ManifestEntryKind = "dep" | "requested" | "unresolved";
+
+function manifest_entry_kind(value: string): ManifestEntryKind {
+  if (value == "dep") return "dep";
+  try {
+    new semver.Range(value == "any" ? "*" : value);
+    return "requested";
+  } catch {
+    return "unresolved";
+  }
+}
+
+// "boot" check: refuse to operate when the manifest holds a value that is
+// neither `dep` nor a valid semver range — i.e. a hand-edit that hasn’t been
+// finished. no manifest at all → legacy behavior (see hydrate_graph), so
+// existing installs keep working untouched.
+function assert_manifest_resolved(prefix = install_prefix()) {
+  let manifest;
+  try {
+    manifest = read_manifest(prefix);
+  } catch (err) {
+    // invalid TOML (e.g. a partially-finished hand-edit) must block commands
+    // with a clear message, not crash with an uncaught parse stack trace.
+    console.error(
+      "%cerror",
+      "color:red",
+      `could not parse ${manifest_path(prefix)}: ${
+        err instanceof Error ? err.message : err
+      }`,
+    );
+    console.error("fix the TOML syntax and re-run");
+    Deno.exit(1);
+  }
+  if (!manifest) return;
+  const unresolved = Object.entries(manifest)
+    .filter(([, value]) => manifest_entry_kind(value) == "unresolved")
+    .map(([project]) => project);
+  if (unresolved.length == 0) return;
+  console.error(
+    "%cerror",
+    "color:red",
+    `unresolved entries in ${manifest_path(prefix)}:`,
+  );
+  for (const project of unresolved) {
+    console.error(`    ${project}`);
+  }
+  console.error(
+    "edit the file, set each to `dep`, `*`, or a version, then re-run",
+  );
+  Deno.exit(1);
+}
+
+// resolve the constraint graph used by `outdated`/`update`. with a manifest we
+// seed hydrate from the *requested* packages only and let it recompute the
+// transitive deps coherently; without one we fall back to today’s behavior of
+// assuming every installed package is pinned to its major version. an
+// unreconcilable seed is dropped with a warning rather than aborting (#88).
+async function hydrate_graph(
+  pkgs: Installation[],
+): Promise<Record<string, semver.Range>> {
+  const manifest = read_manifest();
+  const seeds = manifest
+    ? Object.entries(manifest)
+      .filter(([, value]) => value != "dep")
+      .map(([project, value]) => ({
+        project,
+        constraint: new semver.Range(value == "any" ? "*" : value),
+      }))
+    : pkgs.map((x) => ({
+      project: x.pkg.project,
+      constraint: new semver.Range(`^${x.pkg.version}`),
+    }));
+
+  // installs can hold mutually-incompatible versions of a shared dep (e.g.
+  // python pins zlib=1.3.1 while node pulled zlib^1.3.2); hydrate models a
+  // single coherent universe and throws "cannot intersect". rather than let one
+  // unreconcilable seed take down the whole command (the #88 symptom), drop the
+  // seed that is one side of the conflict and re-resolve — the package is then
+  // covered by its dependents’ constraints instead of our pin — accumulating a
+  // warning for each so the user can fix or `dep` it.
+  const dropped: { project: string; constraint: string }[] = [];
+  let active = seeds;
+  let raw_graph: { project: string; constraint: semver.Range }[];
+  for (;;) {
+    try {
+      raw_graph = (await hydrate(active)).pkgs;
+      break;
+    } catch (err) {
+      if (
+        !(err instanceof Error) || !err.message.includes("cannot intersect")
+      ) {
+        throw err;
+      }
+      // err.message is "cannot intersect: <a> && <b>"; drop the seed whose
+      // constraint is one of the two sides.
+      const sides = err.message.match(
+        /cannot intersect:\s*(.+?)\s*&&\s*(.+?)\s*$/,
+      );
+      const idx = sides
+        ? active.findIndex((s) => {
+          const t = `${s.constraint}`;
+          return t == sides[1] || t == sides[2];
+        })
+        : -1;
+      if (idx < 0) {
+        // can’t attribute the conflict to one of our seeds; surface it raw.
+        console.error("%cversion conflict", "color:red", err.message);
+        if (manifest) {
+          console.error(
+            `  edit ${manifest_path()}: set the offending package to \`dep\`, or to a compatible version.`,
+          );
+        }
+        Deno.exit(1);
+      }
+      dropped.push({
+        project: active[idx].project,
+        constraint: `${active[idx].constraint}`,
+      });
+      active = active.filter((_, i) => i != idx);
+    }
+  }
+
+  if (dropped.length) {
+    const where = manifest ? ` in ${manifest_path()}` : "";
+    for (const { project, constraint } of dropped) {
+      console.error(
+        "%c! warning",
+        "color:yellow",
+        `\`${project}\` (${constraint}) can’t be reconciled with a dependency’s requirement; ignoring that pin — set \`${project}\` to \`dep\` or a compatible version${where} to silence this.`,
+      );
+    }
+  }
+
+  const graph: Record<string, semver.Range> = {};
+  for (const { project, constraint } of raw_graph) {
+    graph[project] = constraint;
+  }
+  return graph;
+}
+
+// edit the on-disk manifest as text so a user’s comments and hand-edits to
+// untouched lines survive. entries in `set` are overwritten in place (or
+// appended); projects in `remove` are dropped.
+function apply_manifest(
+  prefix: Path,
+  set: Record<string, string>,
+  remove: string[] = [],
+) {
+  const path = manifest_path(prefix);
+  Deno.mkdirSync(dirname(path.string), { recursive: true });
+  const text = existsSync(path.string)
+    ? Deno.readTextFileSync(path.string)
+    : MANIFEST_HEADER;
+
+  const pending = new Map(Object.entries(set));
+  const removing = new Set(remove);
+  const key_re = /^\s*"([^"]+)"\s*=/;
+
+  const out: string[] = [];
+  for (const line of text.split("\n")) {
+    const project = line.match(key_re)?.[1];
+    if (project && removing.has(project)) continue;
+    if (project && pending.has(project)) {
+      out.push(`"${project}" = "${pending.get(project)}"`);
+      pending.delete(project);
+    } else {
+      out.push(line);
+    }
+  }
+
+  // append new entries directly after the existing ones — no separator blank,
+  // or every install would add a gap. the single blank after the header comes
+  // from MANIFEST_HEADER itself.
+  let body = out.join("\n");
+  if (!body.endsWith("\n")) body += "\n";
+  for (const [project, value] of pending) {
+    body += `"${project}" = "${value}"\n`;
+  }
+
+  Deno.writeTextFileSync(path.string, body);
+}
+
+// fold the already-requested packages from the manifest into this install, so a
+// shared dependency is resolved once across everything you’ve asked for rather
+// than each install picking its own version and clobbering the link (#88: `i
+// node` would relink zlib to 1.3.2, breaking python’s 1.3.1). new args win over
+// a manifest entry for the same project. `dep`s are omitted — they’re recomputed
+// from the requested set.
+async function combined_specs(prefix: Path, args: string[]): Promise<string[]> {
+  const manifest = read_manifest(prefix);
+  // no args → let install() emit "no packages specified" rather than re-syncing.
+  if (!manifest || args.length == 0) return args;
+
+  const new_projects = new Set<string>();
+  for (const arg of args) {
+    try {
+      const found = await hooks.usePantry().find(arg);
+      if (found.length == 1) new_projects.add(found[0].project);
+    } catch {
+      // unresolved project name; the worst case is a duplicate spec, which
+      // pkgx reconciles against the identical project anyway.
+    }
+  }
+
+  const specs = [...args];
+  for (const [project, value] of Object.entries(manifest)) {
+    if (value == "dep" || new_projects.has(project)) continue;
+    specs.push(value == "*" || value == "any" ? project : `${project}${value}`);
+  }
+  return specs;
+}
+
+// map each requested arg to its canonical project and the constraint you asked
+// for. a bare name (`node`) yields `*` here, which record_install then
+// major-locks to the installed version (`^<installed>`); a versioned spec
+// (`node@22`) yields its range (`^22`) verbatim. pantry hiccups are non-fatal:
+// the package will still be picked up as a pin by record_install’s tree walk.
+async function requested_constraints(
+  args: string[],
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const arg of args) {
+    let project: string | undefined;
+    try {
+      const found = await hooks.usePantry().find(arg);
+      if (found.length == 1) project = found[0].project;
+    } catch {
+      continue;
+    }
+    if (!project) continue;
+    out[project] = `${utils.pkg.parse(arg).constraint}`;
+  }
+  return out;
+}
+
+// keep the manifest in step with an install. requested packages record intent
+// and overwrite: a bare name major-locks to what was installed (`^version`,
+// matching pre-manifest `outdated`/`update` seeding), a versioned spec keeps the
+// range you asked for (`node@22` → `^22`). every other package the install
+// pulled in is recorded as `dep` — a transitive dependency with no constraint
+// of its own, recomputed at resolution time. existing entries (e.g. a `dep` you
+// promoted to a version by hand) are never clobbered.
+async function record_install(prefix: Path, args: string[]) {
+  try {
+    const requested = await requested_constraints(args);
+    const existing = read_manifest(prefix) ?? {};
+
+    const greatest: Record<string, SemVer> = {};
+    for await (const { pkg } of walk_pkgs(prefix.join("pkgs"))) {
+      const cur = greatest[pkg.project];
+      if (!cur || pkg.version.gt(cur)) greatest[pkg.project] = pkg.version;
+    }
+
+    const set: Record<string, string> = {};
+    for (const [project, constraint] of Object.entries(requested)) {
+      // a bare request parses to "*"; lock it to the installed major instead.
+      set[project] = constraint == "*" && greatest[project]
+        ? `^${greatest[project]}`
+        : constraint;
+    }
+
+    // everything else now on disk is a transitive dependency: record it as
+    // `dep`, carrying no constraint of its own. at compute time we hydrate the
+    // requested (non-`dep`) entries, which pulls the whole installed graph back
+    // in for collision detection, so deps don't need a recorded range.
+    for (const project of Object.keys(greatest)) {
+      if (project in requested || project in existing) continue;
+      set[project] = "dep";
+    }
+
+    apply_manifest(prefix, set);
+  } catch (err) {
+    console.error(
+      "%c! warning:",
+      "color:yellow",
+      `could not update ${manifest_path(prefix)}: ${
+        err instanceof Error ? err.message : err
+      }`,
+    );
   }
 }
 
